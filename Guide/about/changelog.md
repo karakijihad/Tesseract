@@ -16,6 +16,27 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **When a conversation is wrapped up, it hands over what it was doing right
+  away.** Before, the app read the whole conversation back afterwards to work
+  out where things stood, which took most of a minute on a long one, and the
+  work could not move until it finished. The assistant writes that down itself
+  now, at the moment it decides, so the handover arrives in seconds and says
+  the same things: what the work was for, what got done, what is left and what
+  to do next.
+- **A conversation that says there is nothing left to do is believed.** It ends
+  there rather than starting fresh and carrying on with nothing, and you are
+  told which of the two happened.
+- **If the room fills before any of that is written, the app asks for it, in
+  the conversation, and tells you the limit was reached.** It asks twice. If
+  nothing comes back it says so plainly and clears the conversation with
+  nothing carried over, rather than quietly starting a fresh one that knows
+  nothing about what you were doing.
+- **What the assistant learns from a conversation no longer holds up the
+  conversation.** That pass runs on its own now, and when it fails you lose
+  what it would have learned, never the work. A single stuck call used to leave
+  a conversation unable to be wrapped up at all for as long as the app was
+  running.
+
 - **Everything the app keeps about itself has a stated lifetime.** And you can
   change it. Some of its own records had no rule at all. They grew with
   nothing watching, and the Thrown away panel could not tell a deliberate

@@ -27,12 +27,11 @@ def fold_daily_files() -> None:
     """Fold `YYYY-MM-DD.jsonl` into per-chat files, once.
 
     Without this the layout change is a data loss with no error in it. Every
-    reader is keyed by chat, so on the day the store moved, every boundary a
-    conversation had already written became unfindable: `latest_for_chat`
-    returns nothing, the continuity package is rebuilt from nothing, and
-    `why_not_continue` goes blind on exactly the long-running work the record
-    exists for. All three fail OPEN and in silence, which is the failure this
-    whole change was made to close.
+    chat-keyed reader is answered from these files, so on the day the store
+    moved, every boundary a conversation had already written became
+    unfindable: `latest_for_chat` returns nothing and anything asking what a
+    conversation has already crossed is answered with silence rather than an
+    error, which is the failure this whole change was made to close.
 
     **The target is rewritten in timestamp order, not appended to.** Appending
     is what a fold that runs beside ordinary writes cannot do: an OSError
@@ -47,8 +46,9 @@ def fold_daily_files() -> None:
     reached yet has to be sorted in rather than sat on top of.
 
     Rows are deduplicated by checkpoint id, so re-entering after a crash or a
-    second process cannot write a boundary twice, and a repeated boundary is
-    exactly what `why_not_continue` reads as work going round.
+    second process cannot write a boundary twice: a conversation's history of
+    boundaries is read back as evidence, and a row written twice is a boundary
+    that never happened.
 
     A row that will not parse is carried across and sorted FIRST: this is a
     move, and a move that quietly discards what it cannot read is worse than

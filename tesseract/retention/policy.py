@@ -111,10 +111,14 @@ class Swept:
     removed: int = 0
     failed: int = 0
     # What the window reached and the sweep kept anyway, because removing it
-    # would have left no record at all. Only `scheduler_runs` can hold rows
-    # back today, and the count is what says the summarise-then-prune contract
-    # is holding: a summary that silently did not happen is how a log becomes
-    # the only record and then stops being one.
+    # would have left no record at all. TWO trees hold rows back, and they do
+    # it from opposite sides of the same contract, so nothing reading this
+    # count may assume either reason: `scheduler_runs` keeps a day's rows
+    # because no summary of it was ever written, and `session_journal` keeps
+    # the summary lines themselves because they are what lets that day's rows
+    # go. Both are the same claim about the same guarantee, which is why one
+    # field carries them, and the surface that renders it says only what is
+    # true of both.
     held: int = 0
 
     def __add__(self, other: "Swept") -> "Swept":
@@ -394,12 +398,12 @@ def _registry() -> dict[str, Tree]:
                 "answer to which of them earn their place."
             ),
             why=(
-                "A helper missing from this file has never run, which is how "
-                "the roster tells an unused one from a busy one. So a year "
-                "rather than a month: the question is whether you still need a "
-                "helper at all, and that is not answered by the last fortnight. "
-                "A row is a name and a time, so a year of them is smaller than "
-                "one screenshot."
+                "A helper missing from this file has not run inside the window "
+                "below, which is how the roster tells an unused one from a busy "
+                "one. So a year rather than a month: the question is whether you "
+                "still need a helper at all, and that is not answered by the "
+                "last fortnight. A row is a name and a time, so a year of them "
+                "is smaller than one screenshot."
             ),
             sweep=sweeps.agent_invocations,
             where=sweeps.agent_invocations_roots,
@@ -426,9 +430,13 @@ def _registry() -> dict[str, Tree]:
             sweep=sweeps.skill_usage,
             where=sweeps.skill_usage_roots,
             actions=(Action.DELETE,),
-            # Comfortably above the span the refinement job reads, which is set
-            # in `schedule.yaml` and is days. A window near it would leave that
-            # job judging a whole skill on two rows.
+            # A chosen constant, and unlike the two floors above it this one is
+            # NOT read from what it protects: the refinement job's span lives in
+            # `schedule.yaml`, and reaching config from the registry would make
+            # the policy table unloadable without the scheduler's own loader.
+            # So the guard is a test instead
+            # (`test_the_skill_floor_still_clears_the_job_that_reads_it`), which
+            # fails if that span is ever raised to meet this number.
             floor_days=30,
         ),
         Tree(
@@ -656,6 +664,13 @@ def _registry() -> dict[str, Tree]:
             ),
             sweep=sweeps.workspace_events,
             where=sweeps.workspace_events_roots,
+            # The sweep has always raised on anything but DELETE. Saying so
+            # here is what moves that refusal to load, which is where
+            # `actions` promises it happens: without it, `action: archive` on
+            # this row is accepted and raises inside the nightly pass instead,
+            # where the job records it per tree and carries on, so the inbox
+            # silently stops ageing.
+            actions=(Action.DELETE,),
         ),
     )
     return {t.key: t for t in trees}

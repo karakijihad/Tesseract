@@ -1,0 +1,187 @@
+"""Learning from a conversation that is ending, once, wherever it ended.
+
+Reflection before a fresh start had three implementations. The cockpit's
+`/reset` snapshots the conversation and reflects in the background under
+`REFLECTION_PROMPT`, landing a `reflection_proposal` in the workspace inbox. A
+channel's `/clear` ran a synthetic FOREGROUND turn against a second,
+hand-written prompt and landed nothing anywhere the operator could read later.
+And `session_ops.do_reset` / `reset_with_reflection` were a third, written and
+never called.
+
+So the REFLECTION lives here and is the same for everyone.
+
+**It has one job and it controls nothing.** For a while it had two: it also
+wrote the record a boundary hands the next conversation, which made it the
+only thing standing between a conversation and its own continuity. The
+handover waited on a model turn over the whole transcript (thirty-four seconds
+on the operator's own run), a reflection that failed cost the work rather than
+the learning, and the fix for that was a boundary refusing to clear while a
+reflection was in flight, which turned a hung provider call into a
+conversation that could never consolidate. The agent writes that record itself
+now, at the boundary, so a reflection that fails, hangs or is skipped costs the
+learning from one conversation and nothing else.
+
+This file was called `handoff.py`, and the word means the record now.
+
+What does NOT live here, because each surface is genuinely right about its own:
+
+- **Persisting.** The cockpit archives the outgoing transcript into the drawer.
+  A channel drops its durable record, so the next message does not restore the
+  thing that was just cleared. Neither is the other's bug.
+- **The ending.** The cockpit reaches an empty conversation by opening a new
+  chat beside the archived one; a channel has no chat to switch to and wipes in
+  place. A transport difference, not a behaviour one.
+
+The caller persists, calls this, then ends the conversation the way its surface
+can.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+#: How many saves the inbox summary lists by name before it counts the rest.
+_BULLET_CAP = 6
+_SUMMARY_CHARS = 1200
+
+
+def reflect_callbacks(app: Any, session: Any, label: str) -> tuple:
+    """Build `(on_complete, on_error)` for `reflect_in_background`.
+
+    `on_complete` writes a `reflection_proposal` event carrying the actual save
+    list, one bullet per `memory_save` / `diary_append` / `soul_growth_propose`
+    observed, so the operator sees WHAT was saved and not just a count. The
+    `mission_reflection_proposal` kind is historical-records-only — its producer
+    was removed with the mission engine, and the kind stays defined so old
+    workspace events still deserialize.
+
+    `on_error` writes the same kind at `priority=7`, so a reflection that failed
+    rises above ambient inbox noise instead of being buried in a log.
+    """
+
+    async def on_complete(saves: list[dict[str, Any]], reason: str) -> None:
+        try:
+            from tesseract.workspace_events.broadcast import broadcast_workspace_event
+            from tesseract.workspace_events.events import WorkspaceEvent
+
+            store = app.get("workspace_event_store")
+            if store is None:
+                log.warning("reflect proposal skipped — no workspace_event_store on app")
+                return
+            count = len(saves)
+            if count:
+                bullet_lines: list[str] = []
+                for s in saves[:_BULLET_CAP]:
+                    tool = s.get("tool", "?")
+                    title = s.get("title") or s.get("snippet") or "(no title)"
+                    status = s.get("status") or ""
+                    status_tag = (
+                        f" [{status}]"
+                        if status and status not in {"saved", "completed"}
+                        else ""
+                    )
+                    bullet_lines.append(f"- [{tool}]{status_tag} {title}")
+                if count > _BULLET_CAP:
+                    bullet_lines.append(f"- … and {count - _BULLET_CAP} more")
+                summary = (
+                    f"Reflection complete: {count} write{'s' if count != 1 else ''}. "
+                    "Expand for paths and content.\n" + "\n".join(bullet_lines)
+                )[:_SUMMARY_CHARS]
+            else:
+                summary = "Reflection complete: nothing load-bearing to save."
+            event = WorkspaceEvent(
+                event_id=_event_id("evt_refl_session", session),
+                ts=datetime.now(timezone.utc).isoformat(),
+                kind="reflection_proposal",
+                source="agent",
+                title=f"Session reflection ({label})",
+                summary=summary,
+                payload={
+                    "session_id": session.session_id,
+                    "saves_count": count,
+                    "saves": saves,
+                    "reason": reason,
+                    "label": label,
+                },
+            )
+            store.append_event(event)
+            await broadcast_workspace_event(app, event)
+        except Exception:
+            log.exception(
+                "reflect_in_background on_complete: emit proposal failed (%s)", label
+            )
+
+    async def on_error(exc: BaseException, reason: str) -> None:
+        try:
+            from tesseract.workspace_events.broadcast import broadcast_workspace_event
+            from tesseract.workspace_events.events import WorkspaceEvent
+
+            store = app.get("workspace_event_store")
+            if store is None:
+                return
+            event = WorkspaceEvent(
+                event_id=_event_id("evt_refl_err", session),
+                ts=datetime.now(timezone.utc).isoformat(),
+                kind="reflection_proposal",
+                source="agent",
+                title=f"Session reflection failed ({label})",
+                summary=f"Reflection raised {type(exc).__name__}: {exc}"[:_SUMMARY_CHARS],
+                priority=7,
+                payload={
+                    "session_id": session.session_id,
+                    "reason": reason,
+                    "label": label,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            store.append_event(event)
+            await broadcast_workspace_event(app, event)
+        except Exception:
+            log.exception(
+                "reflect_in_background on_error: emit proposal failed (%s)", label
+            )
+
+    return on_complete, on_error
+
+
+def _event_id(prefix: str, session: Any) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    return f"{prefix}_{str(getattr(session, 'session_id', '') or '')[:16]}_{stamp}"
+
+
+def start_reflection(
+    app: Any, session: Any, chat_session: Any, *, reason: str, label: str
+) -> None:
+    """Reflect on a snapshot of `chat_session`, in the background.
+
+    Returns nothing, and that is the point. It used to answer whether the
+    conversation could be left behind, because a reflection already in flight
+    meant this boundary would write no record and hand over nothing. The
+    boundary writes its own record now, so a reflection that is busy, too
+    short to be worth a model turn, or broken is a reflection that did not
+    happen, and the conversation is cleared either way.
+
+    Background, on a snapshot, for the reason `session_ops` gives: reflection is
+    a model turn and must never hold the operator's foreground. The live session
+    can be wiped or switched away from in parallel; the clone owns its own copy
+    of the history.
+
+    Never raises. The boundary has already been decided and a boundary must not
+    fail because the thing that learns from it could not start.
+    """
+    try:
+        from tesseract.brain.session_ops import reflect_in_background
+
+        on_complete, on_error = reflect_callbacks(app, session, label)
+        reflect_in_background(
+            chat_session, reason=reason, on_complete=on_complete, on_error=on_error
+        )
+    except Exception:
+        log.exception("reflection could not be started for %s", label)
+
+
+__all__ = ["reflect_callbacks", "start_reflection"]

@@ -27,6 +27,7 @@ const LABELS: Record<string, string> = {
   morning: 'The app decided what to work on today',
   workday: 'The app worked on one of the steps it decided',
   carry_on: 'The app carried the work on after clearing this conversation',
+  handoff_asked: 'The app asked where the work stood before clearing this conversation',
   continuity: 'What the last consolidation carried over',
   boundary: 'What happened when this conversation was consolidated',
 };

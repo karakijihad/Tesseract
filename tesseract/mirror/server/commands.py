@@ -31,7 +31,7 @@ from tesseract.mirror.server.chat_lifecycle import (
     would_orphan_a_session,
 )
 from tesseract.mirror.server.envelope import make_envelope
-from tesseract.mirror.server.handoff import hand_off, reflect_callbacks
+from tesseract.mirror.server.reflect import reflect_callbacks, start_reflection
 from tesseract.mirror.server.routes.system import soul_path
 from tesseract.mirror.server.session import ServerSession, send_envelope
 from tesseract.permissions.policy import VALID_MODES
@@ -201,9 +201,7 @@ async def cmd_reflect(app: web.Application, session: ServerSession) -> None:
 
     base_complete, base_error = reflect_callbacks(app, session, label="manual")
 
-    async def _on_complete(
-        saves: list[dict[str, Any]], reason: str, checkpoint: Any = None,
-    ) -> None:
+    async def _on_complete(saves: list[dict[str, Any]], reason: str) -> None:
         # Run the librarian consolidation pass + SOUL transparency notification
         # AFTER the reflection turn finishes. Failures here are non-fatal —
         # they're surfaced via log + the proposal event.
@@ -285,7 +283,7 @@ async def cmd_reflect(app: web.Application, session: ServerSession) -> None:
                     "post-reflect envelope send failed for %s", session.session_id
                 )
         finally:
-            await base_complete(saves, reason, checkpoint)
+            await base_complete(saves, reason)
 
     started = reflect_in_background(
         session.chat_session,
@@ -503,7 +501,7 @@ async def cmd_reset(
     await start_fresh_chat(
         app,
         session,
-        on_persisted=lambda: hand_off(
+        on_persisted=lambda: start_reflection(
             app, session, session.chat_session, reason="ws_reset", label="reset"
         ),
     )
@@ -634,7 +632,7 @@ async def consolidate_in_place(
     session: ServerSession,
     *,
     chat_id: str | None = None,
-    on_persisted: Callable[[], bool] | None = None,
+    on_persisted: Callable[[], None] | None = None,
 ) -> bool:
     """The cockpit's ending: archive what was said, then clear the same thread.
 
@@ -715,17 +713,21 @@ async def consolidate_in_place(
         # caller keeps the debt and the next turn tries again.
         return False
 
-    if on_persisted is not None and not on_persisted():
-        # Its answer is believed, the way the archive copy's is just above.
-        # `False` means this boundary may not reflect yet, and clearing anyway
-        # is a conversation emptied with nothing written down and nothing to
-        # hand the next turn. The conversation stands, the debt is kept, and
-        # the next turn asks again.
-        log.warning(
-            "consolidation: %s may not reflect yet, so the conversation stands",
-            outgoing_id,
-        )
-        return False
+    if on_persisted is not None:
+        # Fired here, at the point of no return, and its answer is not asked
+        # for. It used to say whether this boundary MAY clear, which meant
+        # only "a previous reflection is still running": while reflection
+        # wrote the record a boundary hands over, clearing past a busy one
+        # emptied a conversation with nothing written down. The agent writes
+        # that record itself now, so a reflection that cannot run costs the
+        # learning and never the work.
+        try:
+            on_persisted()
+        except Exception:
+            log.exception(
+                "consolidation: the reflection for %s could not be started",
+                outgoing_id,
+            )
 
     return await _wipe_in_place(
         session, model=model, mode="consolidate", chat_id=outgoing_id

@@ -193,7 +193,7 @@ def _what_it_did(counts: dict[str, Any]) -> str:
     if held:
         said.append(
             f"and kept {_plural(held, 'row', 'rows')} past the window because "
-            "no summary of their day had been written yet"
+            "removing them would have left no record of their day"
         )
     if failed:
         said.append(f"and could not touch {_plural(failed, 'thing', 'things')}")

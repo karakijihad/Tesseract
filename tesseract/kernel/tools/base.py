@@ -369,7 +369,12 @@ class ToolContext:
     # before its `tool_result` is appended. `None` where there is no
     # conversation to continue (the scheduler, autonomy, a sub-agent), and
     # `session_continue` says so rather than claiming it worked.
-    request_continuation: Optional[Callable[[str], None]] = field(
+    #
+    # It takes the HANDOFF as well as the mode, because they are one answer.
+    # The agent says where the work stands in the same call in which it says
+    # what should happen to the conversation, so there is no second call to
+    # make and no question about which handoff a boundary belongs to.
+    request_continuation: Optional[Callable[[str, Optional[dict]], None]] = field(
         default=None, repr=False
     )
 

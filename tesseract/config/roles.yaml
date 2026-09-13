@@ -67,48 +67,24 @@ reranker:
 # ─── The boundary ───────────────────────────────────────────
 # What bounds a conversation that keeps deciding to carry the work on.
 # A conversation that cannot be cleared is left standing, and the next turn
-# tries again; there is no second mechanism. This block is what stops the work
-# going round inside one that IS being cleared.
+# tries again; there is no second mechanism.
 #
 # The agent decides whether meaningful work remains and the runtime does not
-# argue with it. What the runtime does is refuse a continue that nothing is
-# owed for, which is a different claim: a model asked "is there work left"
-# answers yes cheaply, and a loop that continues successfully and achieves
-# nothing never trips the failure breaker.
+# argue with it. It refuses one thing: a continue whose handoff says nothing
+# is left to do, which is not an opinion about the work but the agent's own
+# answer read back. Two rules that counted repetition used to live here and
+# were deleted with their keys: both compared sentences the agent writes
+# itself, so rephrasing the next action walked past either one.
 boundary:
-  # There is deliberately NO bound on how many times a conversation may carry
-  # on. There was one, a count of five, and it was the only refusal that fired
-  # without evidence: real multi-phase work reaches five boundaries and was
-  # stopped for arriving, while two steps alternating forever sailed past
-  # every other check. A count cannot tell those apart. What bounds an endless
-  # conversation is what bounds anything else that runs: the budget.
-  repeat_limit: 2               # how much repetition is still work rather than
-                                # a loop, and it is read twice. The same next
-                                # action reported at this many consecutive
-                                # boundaries is the work not moving; and this
-                                # many boundaries in a row that report nothing
-                                # the conversation had not already reported is
-                                # the work going round. Two, because the second
-                                # time is already the first repeat.
-  cycle_window: 8               # how many of this conversation's boundaries
-                                # are read when asking whether it is going
-                                # round. It has to be more than `repeat_limit`,
-                                # because the boundaries BEFORE the window are
-                                # what "already reported" is judged against. A
-                                # conversation whose run of continues is longer
-                                # than this reads an action it repeated further
-                                # back as a new one, so raising it makes the
-                                # check see further rather than fire sooner.
   reflection_ceiling_seconds: 300
                                 # how long one reflection may run before it is
-                                # given up on. It matters because a boundary
-                                # will not clear a conversation while its
-                                # previous reflection is still going: without
-                                # a ceiling, one provider call that never
-                                # returns leaves that conversation unable to
-                                # consolidate for as long as the process
-                                # lives, and it grows past its window with
-                                # nothing able to bound it. Generous on
+                                # given up on. Nothing waits on it any more:
+                                # the handoff is written by the agent at the
+                                # boundary, so a reflection that hangs costs
+                                # the learning from one conversation and never
+                                # the work. This is what stops a provider call
+                                # that never returns holding a task open for
+                                # the life of the process. Generous on
                                 # purpose. A reflection is a model turn with
                                 # tool calls in it, and one measured on a long
                                 # conversation took 34 seconds; this is the

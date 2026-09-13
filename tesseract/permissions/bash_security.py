@@ -463,7 +463,7 @@ def _check_25(cmd: str) -> tuple[int, str] | None:
 # test holds the three together.
 _SEALED_SEGMENT_RE = re.compile(
     r"""(?:^|[\s"'=(;|&])(?:\./)?"""
-    r"""(?:(app|runtime|agenda|logs/usage|logs/skills|logs/workspace)/"""
+    r"""(?:(app|runtime|agenda|logs/usage|logs/skills|logs/agents|logs/workspace)/"""
     r"""|(logs/cost-tracking\.jsonl|projects/registry\.json)\b)"""
 )
 
@@ -589,6 +589,7 @@ _SEALED_DIRS: tuple[tuple[str, ...], ...] = (
     ("agenda",),
     ("logs", "usage"),
     ("logs", "skills"),
+    ("logs", "agents"),
     ("logs", "workspace"),
 )
 _SEALED_FILES: tuple[tuple[str, ...], ...] = (

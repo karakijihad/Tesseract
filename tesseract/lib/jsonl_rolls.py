@@ -24,6 +24,7 @@ simply pruned by the next run instead.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 from datetime import datetime, timezone
@@ -105,6 +106,13 @@ def prune_older_than(path: Path, cutoff: datetime, field: str) -> int:
     except OSError:
         return 0
     if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+        # Logged, because the two benign zero returns above are indistinguishable
+        # from this one to the caller, and a file appended to at the moment of
+        # every nightly sweep would otherwise never prune with nothing anywhere
+        # saying why. That silence is the shape this whole table exists to remove.
+        logging.getLogger(__name__).warning(
+            "prune abandoned for %s: it was written to while being read", path
+        )
         return 0
     rewrite(path, keep)
     return removed

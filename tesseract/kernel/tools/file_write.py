@@ -70,6 +70,11 @@ _RECORD_LOCK_PREFIXES: tuple[str, ...] = (
     "agenda",
     "logs/usage",
     "logs/skills",
+    # Which agent card was reached, and when. The roster decides whether to
+    # keep, rewrite or delete a card from this file, and a name ABSENT from it
+    # reads as never invoked, so a write here is the scoring move above in its
+    # purest form: one appended row makes an unused card look busy.
+    "logs/agents",
     "logs/workspace",
 )
 _RECORD_LOCK_FILES: frozenset[str] = frozenset({

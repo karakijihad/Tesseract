@@ -200,18 +200,26 @@ leaves yours alone. It used to be refused instead, which meant a background
 conversation was the one thing that could grow without limit.
 
 You are told each time, in the conversation itself, and it says what carried
-over: what the work was, what is done, what is left, and what it wrote to memory
-on the way past. Nothing is summarised into that note. The transcript it came
-from is whole, in the archive, and the note holds references to it rather than a
-retelling of it.
+over: what the work was, what is done, what is left, and what to do next. The
+assistant writes that itself, in the same call that asks for the boundary, so
+nothing reads the conversation back afterwards to reconstruct it. Nothing is
+summarised into that note either. The transcript it came from is whole, in the
+archive, and the note holds references to it rather than a retelling of it.
 
-The assistant can also be refused. If it asks to carry work on when the last
-boundary reported nothing left to do, or reports the same next step over and
-over, the runtime stops it and says which of those it was. That is written down
-too, so a conversation the runtime stopped can be told apart later from one that
-finished. There is deliberately no count of how many times it may carry on: a
-count cannot tell real multi-phase work from a loop, and it stopped the first
-while the second sailed past.
+The assistant can also be refused, and there is one way that happens: if it asks
+to carry work on while reporting nothing left to do and no next step, the
+runtime leaves the conversation behind instead and says so. That is written
+down, so a conversation the runtime stopped can be told apart later from one
+that finished. There is deliberately no count of how many times it may carry
+on: a count cannot tell real multi-phase work from a loop, and it stopped the
+first while the second sailed past.
+
+**A conversation that will not say where the work stood is cut off.** When the
+room fills before the assistant has said any of it, the runtime asks, in the
+conversation, and tells you the ceiling was reached. Two asks and no more: a
+third does not happen, the conversation is cleared, nothing is carried over,
+and you are told that is what happened rather than being shown an ordinary
+fresh start.
 
 ## Tool authority
 
@@ -439,13 +447,20 @@ These rules sit underneath the policy and are not reachable from it:
   `tesseract/kernel/`. A tool that ships with TESSERACT is drafted by the
   assistant, reviewed by you, and installed by you.
 - **Its own records are sealed too.** The agenda, the tool and skill usage
-  logs, the workspace events, the cost ledger, the project registry and the
+  logs, the record of which helpers it called on, the workspace events, the
+  cost ledger, the project registry and the
   receipts are written by the runtime itself and read back to decide what it
   learned and what it spent. No file tool and no shell command the assistant
   runs may write into them, in any mode, the same way nothing may write into
   the application tree; reading them stays open. A self-improving agent has
   been measured scoring well by editing the record that scores it, and this is
   the line that keeps that move off the table here.
+
+  The helpers record is the clearest case of why. It holds one row per helper
+  the assistant called on, and a helper missing from it is treated as one you
+  do not need, which is how the app decides whether to keep a helper, rewrite
+  it or drop it. One line added there makes an unused helper look busy, and
+  that decision is then made on something the assistant wrote about itself.
 
   A receipt is the newest of those and the one the rule matters most for. When
   the assistant sends a message, writes a file or makes a commit, the runtime

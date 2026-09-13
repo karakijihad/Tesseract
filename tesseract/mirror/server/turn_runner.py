@@ -618,11 +618,13 @@ async def _maybe_auto_compact(
             chat_id=stamp,
         ))
 
-    async def carry_on(text: str) -> None:
-        # The turn a `continue` promised. Its body is the continuity package,
-        # stamped so the transcript draws it as the runtime's: nobody typed
-        # this, and the package reaching history through the turn is what
-        # keeps it out of the record twice.
+    async def carry_on(text: str, origin: str) -> None:
+        # A turn nobody typed, started by the boundary. Two of them reach here
+        # and the mark is what tells them apart: `carry_on` is the work moving
+        # on with the package as its body, and `handoff_asked` is the runtime
+        # asking a conversation where the work stood before anything moves.
+        # Stamped either way so the transcript draws it as the runtime's, and
+        # so the package reaches history through the turn rather than twice.
         #
         # `send_and_await_turn` rather than a path of its own. It is the
         # primitive this surface already has for a turn on a named chat, it
@@ -630,7 +632,7 @@ async def _maybe_auto_compact(
         # is safe because `handoff` spawned this whole call rather than
         # awaiting it.
         if stamp is None:
-            log.info("no chat to carry the work on for session %s", session.session_id)
+            log.info("no chat to run %s on for session %s", origin, session.session_id)
             return
         running = session.current_turn_tasks.get(stamp)
         if running is not None and not running.done():
@@ -644,9 +646,9 @@ async def _maybe_auto_compact(
             await asyncio.wait({running})
         if getattr(session, "torn_down", False):
             # Asked again, because the wait above can be as long as a turn.
-            log.info("the session ended before %s could carry the work on", stamp)
+            log.info("the session ended before %s could run %s", stamp, origin)
             return
-        await send_and_await_turn(app, session, stamp, text, runtime_origin="carry_on")
+        await send_and_await_turn(app, session, stamp, text, runtime_origin=origin)
 
     await after_turn(
         target, app=app, session=session,

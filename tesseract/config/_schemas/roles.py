@@ -141,42 +141,27 @@ class Boundary(BaseModel):
     Top level beside `compaction:` and for the same reason: it describes the
     mechanism rather than who is using it. A conversation that cannot be
     cleared is left standing and the next turn tries again, so there is no
-    second mechanism; this is what stops the work going round inside one that
-    IS being cleared.
+    second mechanism.
 
     There is deliberately no bound on HOW MANY times a conversation may carry
     on. There was one and it was the only refusal that fired without evidence,
     stopping real multi-phase work for arriving at a count while two steps
     alternating forever sailed past every other check.
+
+    Two more keys lived here and were deleted with the rules that read them.
+    Both compared the SENTENCE a boundary reported as its next action, which
+    the agent writes itself now, so rephrasing walked past either one. The
+    only refusal left reads the handoff in front of it and needs no setting:
+    a conversation that reports nothing remaining is not carried on.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    #: How much repetition is still work rather than a loop. Read twice: the
-    #: same next action at this many consecutive boundaries, and this many
-    #: boundaries reporting nothing the conversation had not already reported.
-    repeat_limit: int = Field(gt=0)
-    #: How far back a cycle counts as a cycle. Must exceed `repeat_limit`,
-    #: because the boundaries BEFORE the window are what "already reported" is
-    #: judged against; at or below it there is no history to judge with and the
-    #: check can never fire.
-    cycle_window: int = Field(gt=0)
-    #: How long one reflection may run before it is given up on. A boundary
-    #: will not clear a conversation while its previous reflection is still
-    #: going, so without a ceiling one provider call that never returns leaves
-    #: that conversation unable to consolidate for the life of the process.
+    #: How long one reflection may run before it is given up on. Nothing waits
+    #: on it: the agent writes the record a boundary hands over, so this bounds
+    #: a provider call that never returns and costs one conversation's learning
+    #: rather than its continuity.
     reflection_ceiling_seconds: float = Field(gt=0)
-
-    @model_validator(mode="after")
-    def _window_has_history_behind_it(self) -> "Boundary":
-        if self.cycle_window <= self.repeat_limit:
-            raise ValueError(
-                f"cycle_window ({self.cycle_window}) must exceed repeat_limit "
-                f"({self.repeat_limit}), or the cycle check has nothing behind "
-                f"its window to judge 'already reported' against and can never "
-                f"fire"
-            )
-        return self
 
 
 class Compaction(BaseModel):
@@ -219,13 +204,11 @@ class RolesConfig(BaseModel):
     #: is one that would be written without it.
     #:
     #: Nothing raises downstream, which is the reason this matters rather
-    #: than a reason it does not. Its reader fails open by design
-    #: (`continuity.why_not_continue`): an unreadable bound is not evidence a
-    #: conversation is going round, and halting the runtime over a config edit
-    #: would be worse. So a file written without this block does not break
-    #: anything loudly. It quietly takes the loop guard off the board and the
-    #: conversation carries on looking healthy, which is exactly the failure a
-    #: write gate exists to catch.
+    #: than a reason it does not. Its one reader bounds a background task
+    #: (`session_ops._reflection_ceiling`), so a file written without this
+    #: block does not break anything loudly: it quietly takes the ceiling off
+    #: a model call that can hang, which is exactly the failure a write gate
+    #: exists to catch.
     boundary: Boundary
     compaction: Compaction = Field(default_factory=Compaction)
     chains: dict[str, list[str]] = Field(default_factory=dict)

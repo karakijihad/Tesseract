@@ -38,7 +38,16 @@ _DAY_S = 86400.0
 
 
 def _retire(path: Path, action: Action, archive_dir: Path) -> Swept:
-    """Delete or move one file, and never raise for one bad file."""
+    """Delete or move one file, and never raise for one bad file.
+
+    **A DELETE-only tree still has to pass an `archive_dir`, and it is dead.**
+    Several sweeps here raise unless `action is Action.DELETE`, so the ARCHIVE
+    branch below is unreachable from them and the directory they name is never
+    created. It is named rather than omitted because the parameter is not
+    optional, and naming where a future ARCHIVE would put things beats inventing
+    a path at the moment somebody widens that tree's `actions`. Said once here
+    rather than at each call site, because it is a property of this function.
+    """
     try:
         if action is Action.DELETE:
             path.unlink()
@@ -807,11 +816,6 @@ def supervisor_incidents(keep_days: int, action: Action) -> Swept:
     cutoff_day = date.today() - timedelta(days=keep_days)
     total = Swept()
 
-    # The archive directory `_retire` takes is unreachable here: `action` is
-    # DELETE or this function has already raised. It is named rather than
-    # omitted because the parameter is not optional, and naming the place a
-    # future ARCHIVE would go is better than a path that would be invented at
-    # the moment somebody widened `actions`.
     for path in sorted(root.glob("backend-stack-*.txt")):
         stamped = _compact_stamp_date(path.stem)
         if stamped is not None and stamped < cutoff_day:

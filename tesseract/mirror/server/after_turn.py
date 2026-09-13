@@ -32,10 +32,12 @@ Carrying on is the third answer and it is not a mode: nobody asked and the
 window has room, so this function returns having done nothing.
 
 The runtime owns when a hard boundary is mandatory. It never chooses between
-continue and reset. Where a hard boundary is reached and no answer can be had
--- which is every hard boundary until the reflection call carries the answer
-back with its deltas -- it CONTINUES. Losing the room is recoverable; ending a
-conversation the operator was in the middle of is not.
+continue and reset: it asks, and a conversation that will not answer is cut
+off rather than carried on. It used to CONTINUE by default, on the reading
+that losing the room is recoverable and ending a conversation mid-work is not.
+That reading only held while a reflection reconstructed the record afterwards;
+continuing with no handoff now means continuing with nothing, which is not the
+kinder answer, it is the one that loses the work quietly.
 
 ## One act, and the only difference is what follows it
 
@@ -54,11 +56,22 @@ which is an empty payload and the cost floor back at zero, not a fresh chat
 record. The head does not move across the boundary, so the cached prefix
 survives it.
 
-The package cannot be built here. Reflection is a model turn running in the
-background by design, and the checkpoint it writes does not exist until it
-finishes, which is after this function has returned. So the delivery rides the
-reflection's own completion callback, and if the operator speaks first it
-arrives after their first reply.
+## The record is the agent's, and it is here before the boundary is
+
+The handoff comes in on `session_continue`, in the same call that asks for the
+boundary, so by the time this runs the record already exists and the package
+can be built the moment the conversation is cleared. It used to be built by the
+reflection, which is a model turn over the whole transcript: the handover
+waited for it (thirty-four seconds, measured), a reflection that failed cost
+the work rather than the learning, and the guard against that made a hung
+provider call into a conversation that could never consolidate. None of that is
+bounded here; it is gone.
+
+A HARD boundary is the one case with no call in flight to carry a handoff. The
+runtime asks for one, on the conversation itself, and tells the person the
+ceiling was reached and what happens if no answer comes. Two asks and no more:
+a conversation that will not say where the work stood is cut off, cleared, and
+carries nothing.
 
 There is no fallback. A consolidation that could not clear leaves the
 conversation STANDING, with the boundary still owed so the next turn retries,
@@ -70,11 +83,12 @@ a copy of it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from tesseract.brain.chat import Continuation
+from tesseract.brain.chat import Continuation, Handoff
 from tesseract.orchestrator.autonomy import journal
 from tesseract.memory.log_notes import append_log_entry
 from tesseract.paths import log_dir
@@ -100,6 +114,53 @@ REFUSED_NOTICE = (
     "instead: {reason}. What this taught me is written down. Tell me what you "
     "want done next and I will pick it up from there."
 )
+
+
+#: What the CONVERSATION is asked when it hit the ceiling without saying where
+#: the work stood. Addressed to the model and read by the person over its
+#: shoulder, so it says the consequence before the request.
+ASK_FOR_THE_HANDOFF = (
+    "This conversation has reached the size it can work at, so it is being "
+    "wrapped up now whatever happens next. Say where the work stands, with "
+    "`session_continue`: what this was for, what got done, what is left, and "
+    "what to do first. Choose `continue` if the work goes on and `reset` if it "
+    "is finished. Without that call the conversation is cleared and nothing is "
+    "carried over."
+)
+
+
+#: What a person is told when a conversation was asked and would not answer.
+#: It names the act rather than softening it: the runtime broke a conversation
+#: off, and a notice that read like an ordinary reset would hide the only thing
+#: about this worth knowing.
+CUT_OFF_NOTICE = (
+    "Cut off. I asked this conversation twice where the work stood and got no "
+    "answer, so it is being cleared and nothing is carried over. What it "
+    "taught me is still being written down. Tell me what you want done next "
+    "and I will start from there."
+)
+
+
+#: Why the record says a cut-off conversation was stopped. One sentence,
+#: because it is written onto the checkpoint and read by a person.
+CUT_OFF_REASON = (
+    "it was asked twice where the work stood and never said, so there was "
+    "nothing to carry"
+)
+
+
+#: How many times the runtime asks a conversation for a handoff it did not
+#: volunteer. Two, and then it is cut off.
+#:
+#: The circuit breaker every retry loop here has, and NOT the kind of tally
+#: that fires on how often something happened without evidence that the thing
+#: it counts is what is wrong. The difference is what the count is evidence
+#: of: a limit on how many times a conversation may carry on counted
+#: boundaries and concluded something about the CONTEXT, which it had no
+#: evidence for, and it was deleted for stopping real multi-phase work. This
+#: counts asks that went unanswered and concludes that asking again will go
+#: unanswered too, which is the thing itself.
+MAX_HANDOFF_ASKS = 2
 
 
 def _is_a_chat_on_a_channel(channel: str | None, chat_id: str | None) -> bool:
@@ -171,8 +232,8 @@ async def after_turn(
     channel: str | None = None,
     chat_id: str | None = None,
     announce: Callable[[str], Awaitable[None]] | None = None,
-    carry_on: Callable[[str], Awaitable[None]] | None = None,
-    ending: Callable[[Callable[[], bool]], Awaitable[bool]] | None = None,
+    carry_on: Callable[[str, str], Awaitable[None]] | None = None,
+    ending: Callable[[Callable[[], None]], Awaitable[bool]] | None = None,
     mid_turn: bool = False,
 ) -> None:
     """Run the consolidation boundary for a turn that has just landed, if one
@@ -272,12 +333,8 @@ async def after_turn(
         _note_the_ceiling_was_crossed(chat_session, label)
         return
 
-    answer = _requested(chat_session, label)
-    # What the TURN asked for, kept apart from `answer`, which CC-9 may turn
-    # into a RESET below. A boundary that could not happen hands this one back,
-    # not the one the runtime substituted.
-    asked = answer
-    soft = answer is not None
+    asked = _requested(chat_session, label)
+    soft = asked is not None
     nudge = _take_nudge(chat_session, label)
     if not soft and not _boundary_forced(chat_session, label):
         # Carrying on. Not a mode, not a decision the runtime made: nobody
@@ -288,24 +345,37 @@ async def after_turn(
         _journal_nudge(nudge, answered=None, label=label)
         return
 
-    if answer is None:
-        # A hard boundary the turn did not answer for. CONTINUE, never RESET:
-        # the work carrying on is recoverable and ending a conversation the
-        # operator was in the middle of is not. CC-11 is what allows an answer
-        # before this, by reporting how much room is left every turn.
-        answer = Continuation.CONTINUE
-
     trigger = "soft" if soft else "hard"
+    handoff = asked
     refused = ""
-    if answer is Continuation.CONTINUE:
-        refused = _why_not_continue(chat_session, label)
-        if refused:
-            # Continuing because continuing is possible. The work is left
-            # behind instead, and the record says WHY rather than reading as
-            # an ordinary stop: those two are the events a later reader most
-            # needs to tell apart.
-            log.info("%s may not carry on: %s", label, refused)
-            answer = Continuation.RESET
+
+    if handoff is None:
+        # A hard boundary with nothing in flight to carry a handoff. Ask the
+        # conversation for one, on itself, and leave the boundary owed so the
+        # end of that turn takes it. Nothing is cleared here: the record has
+        # to be written BEFORE the conversation it describes is emptied.
+        if await _ask_for_a_handoff(app, chat_session, label, announce, carry_on):
+            _journal_nudge(nudge, answered=None, label=label)
+            return
+        # Asked, and asked again, and it never said. The conversation is cut
+        # off rather than carried on, which is what "no handoff, no continue"
+        # means when there is nobody left to ask. There is no record, so there
+        # is no package either, and that falls out rather than being enforced.
+        log.warning("%s is being cut off: %s", label, CUT_OFF_REASON)
+        refused = CUT_OFF_REASON
+        answer = Continuation.RESET
+    else:
+        answer = handoff.mode
+        if answer is Continuation.CONTINUE:
+            refused = _why_not_continue(handoff, label)
+            if refused:
+                # It reported nothing left to do, which is an answer and not
+                # an omission: the work is finished, so the conversation is
+                # left behind rather than carried on, and the record says why.
+                # A later reader most needs to tell that apart from a
+                # conversation the runtime stopped.
+                log.info("%s may not carry on: %s", label, refused)
+                answer = Continuation.RESET
 
     if await _consolidate(
         app,
@@ -314,6 +384,7 @@ async def after_turn(
         label=label,
         trigger=trigger,
         outcome=answer,
+        handoff=handoff,
         refused=refused,
         announce=announce,
         carry_on=carry_on,
@@ -339,16 +410,17 @@ async def after_turn(
     # row exists so the operator can see which recommendations are worth
     # making, and a miss counted as a hit is the one reading it must not give.
     _journal_nudge(nudge, answered=None, label=label)
-    # And the turn's own decision goes back where it was found. `_requested`
-    # reads it by CLEARING it, so a refused clear consumed a `continue` the
-    # agent asked for and the next turn met the plain threshold instead,
-    # knowing nothing about it. The debt below is kept for exactly this
-    # reason; the decision is half of the same debt.
-    if soft and asked is not None:
-        put_back = getattr(chat_session, "request_continuation", None)
+    # And the turn's own decision goes back where it was found, the handoff
+    # with it. `_requested` reads by CLEARING, so a refused clear consumed
+    # both the `continue` the agent asked for and the record of where the work
+    # stood, and the next turn met the plain threshold knowing nothing about
+    # either. The debt below is kept for exactly this reason; the decision is
+    # half of the same debt.
+    if asked is not None:
+        put_back = getattr(chat_session, "hand_back_continuation", None)
         if put_back is not None:
             try:
-                put_back(asked.value)
+                put_back(asked)
             except Exception:
                 log.exception("could not hand %s back its own decision", label)
 
@@ -526,113 +598,158 @@ def _journal_nudge(nudge: Any | None, *, answered: Continuation | None, label: s
         log.exception("journalling the observer nudge failed for %s", label)
 
 
-def _requested(chat_session: Any, label: str) -> Continuation | None:
-    """What the turn asked for, or `None`. Reading it clears it.
+def _requested(chat_session: Any, label: str) -> Handoff | None:
+    """What the turn asked for and where it said the work stood, or `None`.
+    Reading it clears it.
 
-    A session object that cannot answer is not an error: sub-agent sessions and
-    test doubles have no continuation to give, and they are the ordinary case
-    for everything that is not a conversation with a person in it.
+    One object because it was one call. A session that cannot answer is not an
+    error: sub-agent sessions and test doubles have no continuation to give,
+    and they are the ordinary case for everything that is not a conversation
+    with a person in it.
     """
     take = getattr(chat_session, "take_continuation", None)
     if take is None:
         return None
     try:
-        raw = take()
+        asked = take()
     except Exception:
         log.exception("reading the turn's decision failed for %s", label)
         return None
-    if not raw:
+    if not isinstance(asked, Handoff):
+        if asked:
+            # `request_continuation` builds these, so anything else means
+            # something wrote the field directly. Say so, and fall through to
+            # the threshold rather than guessing what was meant.
+            log.error("turn asked for an unreadable continuation %r on %s", asked, label)
         return None
-    try:
-        return Continuation(raw)
-    except ValueError:
-        # `request_continuation` refuses these, so reaching here means
-        # something else wrote the field. Say which, and fall through to the
-        # threshold rather than guessing what was meant.
-        log.error("turn asked for an unknown continuation %r on %s", raw, label)
-        return None
+    return asked
 
 
-def _why_not_continue(chat_session: Any, label: str) -> str:
-    """Why this conversation may not carry the work on again, or `""`.
+def _why_not_continue(handoff: Handoff, label: str) -> str:
+    """Why this conversation may not carry the work on, or `""`.
 
-    Asked of the record, which is the only place the answer exists: the
-    boundary being decided has not reflected yet, so what it will report is
-    not knowable here. What IS knowable is what the boundaries before it
-    reported, and that is what says whether anything is moving.
+    Asked of the handoff the agent just wrote, which is the only place the
+    answer is: whether there is anything left to do is the agent's own report,
+    and there is exactly one refusal, which is that it reported none.
 
-    A conversation with no durable id has no record and no history to loop in,
-    which is a sub-agent or a synthetic turn. It is never refused.
+    It used to read the boundaries this conversation had already crossed,
+    because the record was written afterwards by a reflection and this
+    boundary's did not exist yet. `continuity` says why the two rules that
+    lived there are deleted rather than moved.
     """
-    chat_id = str(
-        getattr(getattr(chat_session, "tool_context", None), "chat_id", "") or ""
-    )
-    if not chat_id:
-        return ""
     try:
-        from tesseract.brain.continuity import why_not_continue
+        from tesseract.brain import continuity
+        from tesseract.orchestrator import checkpoints
 
-        return why_not_continue(chat_id)
-    except Exception:
-        log.exception("reading what %s is owed failed", label)
-        return ""
-
-
-def _reflect(
-    app: Any,
-    session: Any,
-    chat_session: Any,
-    *,
-    label: str,
-    trigger: str = "",
-    outcome: str = "",
-    refused: str = "",
-    announce: Callable[[str], Awaitable[None]] | None = None,
-    carry_on: Callable[[str], Awaitable[None]] | None = None,
-) -> bool:
-    """Distil what this conversation taught, and say whether the conversation
-    may now be cleared.
-
-    Those are two questions and the return answers the SECOND. `False` means
-    this boundary may not reflect yet, which the surface's ending honours by
-    leaving the conversation standing; `after_turn` then keeps the debt and
-    the next turn asks again. It never means "reflection produced nothing".
-
-    `announce` is handed on as the delivery for the continuity package, which
-    can only be built once this reflection has written its checkpoint. It is
-    the same callable the notices go through, because the package is a thing
-    the person is told and there is no second way to tell them.
-
-    `carry_on` rides the same callback for the same reason: the turn a
-    `continue` promised is handed the package, and the package does not exist
-    until this reflection has written it down.
-    """
-    if app is None:
-        # No inbox to file a proposal in. That is a missing surface, not a
-        # boundary that may not happen, so the conversation still clears.
-        log.warning("reflection skipped for %s: no app to reach the inbox with", label)
-        return True
-    from tesseract.mirror.server.handoff import hand_off
-
-    try:
-        return hand_off(
-            app,
-            session,
-            chat_session,
-            reason="turn_decision",
-            label=label,
-            trigger=trigger,
-            outcome=outcome,
-            refused=refused,
-            deliver=announce,
-            carry_on=carry_on,
+        return continuity.why_not_continue(
+            checkpoints.build(
+                session_id="", trigger="", outcome="", state=handoff.state
+            )
         )
     except Exception:
-        # Fails CLOSED. Nothing here can say whether reflection started, and
-        # clearing on a maybe is how a conversation is emptied with nothing
-        # written down. The debt is kept and the next turn tries again.
-        log.exception("reflection failed for %s", label)
+        log.exception("reading what %s said was left failed", label)
+        return ""
+
+
+async def _ask_for_a_handoff(
+    app: Any,
+    chat_session: Any,
+    label: str,
+    announce: Callable[[str], Awaitable[None]] | None,
+    carry_on: Callable[[str, str], Awaitable[None]] | None,
+) -> bool:
+    """Ask this conversation where the work stood. True when it was asked.
+
+    Only a HARD boundary reaches here. A soft one arrives carrying its handoff,
+    because the call that asks for the boundary is the call that writes it; a
+    hard one is the runtime noticing, with nothing in flight to answer into.
+
+    `False` means the asking is over: either it has been asked as often as it
+    is going to be, or this surface has no way to start a turn at all. The
+    caller cuts the conversation off, and that is the whole of the loop's
+    bound.
+
+    The turn is SPAWNED and not awaited. This runs at the end of a turn, inside
+    the caller's own flow, and awaiting a turn from there would nest one inside
+    another; the same reasoning `carry_on` already rests on. The end of THAT
+    turn reaches this function again, finds the boundary still owed, and by
+    then either has a handoff or does not.
+
+    Never raises. The turn it is called at the end of has already landed.
+    """
+    if carry_on is None:
+        log.warning(
+            "%s reached a hard boundary with no handoff and this surface "
+            "cannot ask for one, so the conversation is cut off",
+            label,
+        )
         return False
+    count = _count_the_ask(chat_session, label)
+    if count is None or count > MAX_HANDOFF_ASKS:
+        return False
+    if announce is not None:
+        try:
+            await announce(ASK_FOR_THE_HANDOFF)
+        except Exception:
+            log.exception("could not tell %s that it had reached the ceiling", label)
+    log.info("asking %s where the work stood (ask %d of %d)", label, count, MAX_HANDOFF_ASKS)
+    try:
+        from tesseract.mirror.server.ws_connection import _spawn_tracked
+
+        _spawn_tracked(
+            app, carry_on(ASK_FOR_THE_HANDOFF, "handoff_asked"), f"handoff_ask:{label}"
+        )
+    except Exception:
+        log.exception("could not ask %s where the work stood", label)
+        return False
+    return True
+
+
+def _count_the_ask(chat_session: Any, label: str) -> int | None:
+    """How many times this conversation has now been asked, or `None` when it
+    cannot be asked at all.
+
+    `None` for a session that cannot hold the count, which is a sub-agent or a
+    test double. Asking one of those would be an unbounded loop with nothing
+    recording that it had gone round, so it is treated as already spent.
+    """
+    count_it = getattr(chat_session, "asked_for_a_handoff", None)
+    if count_it is None:
+        return None
+    try:
+        return int(count_it())
+    except Exception:
+        log.exception("could not count the handoff asked of %s", label)
+        return None
+
+
+def _reflect(app: Any, session: Any, chat_session: Any, *, label: str) -> None:
+    """Distil what this conversation taught, and nothing else.
+
+    It used to answer whether the conversation could be cleared, and the one
+    thing that answer ever meant was "a previous reflection is still running".
+    That mattered only while reflection wrote the record a boundary hands
+    over; it writes none now, so a reflection that is busy, short or broken
+    costs the learning from one conversation and never its continuity.
+
+    Never raises, and nothing waits on it. The boundary has been decided.
+    """
+    if app is None:
+        # No inbox to file a proposal in. A missing surface, not a boundary
+        # that may not happen.
+        log.warning("reflection skipped for %s: no app to reach the inbox with", label)
+        return
+    try:
+        from tesseract.mirror.server.reflect import start_reflection
+
+        start_reflection(app, session, chat_session, reason="turn_decision", label=label)
+    except Exception:
+        # `start_reflection` catches its own, so what is left here is the
+        # import. It is caught anyway because this runs INSIDE the surface's
+        # ending, at its point of no return, and `_consolidate` reads an
+        # ending that raised as a boundary that did not happen. A reflection
+        # costing the work is the exact shape this phase exists to remove.
+        log.exception("reflection could not be started for %s", label)
 
 
 async def _consolidate(
@@ -643,22 +760,30 @@ async def _consolidate(
     label: str,
     trigger: str,
     outcome: "Continuation",
+    handoff: "Handoff | None",
     refused: str = "",
     announce: Callable[[str], Awaitable[None]] | None = None,
-    carry_on: Callable[[str], Awaitable[None]] | None = None,
-    ending: Callable[[Callable[[], bool]], Awaitable[bool]] | None,
+    carry_on: Callable[[str, str], Awaitable[None]] | None = None,
+    ending: Callable[[Callable[[], None]], Awaitable[bool]] | None,
 ) -> bool:
-    """Reflect, archive, clear in place. True when the surface actually did.
+    """Record, reflect, archive, clear in place, hand over. True when the
+    surface actually cleared.
 
     ONE act for both answers. What the outcome decides is not what happens here
-    but what happens afterwards: it is recorded on the checkpoint, and the
-    reflection's completion callback hands the continuity package over either
-    way, then starts a turn against it for a CONTINUE and not for a RESET.
+    but what happens afterwards: the package is handed over either way, and a
+    CONTINUE also starts a turn against it.
+
+    **The record is built before the clear and written after it.** Built
+    before, because it describes the conversation that is about to be emptied
+    and reads the active project off disk; written after, because a boundary
+    that could not clear did not happen, and a row claiming it did would be
+    read back by the next one as a boundary this conversation crossed.
 
     The surface's ending is the only half that differs, and it is given the
     reflection to fire at its own point of no return. Reflection reads a
     snapshot taken synchronously when it is called, so it is unaffected by the
-    clear that follows it.
+    clear that follows it, and it answers nothing: a boundary no longer waits
+    on what it learns.
 
     A `False` return means the boundary did not happen: the surface refused,
     or the clear did not reach disk. There is no fallback. The caller leaves
@@ -674,18 +799,18 @@ async def _consolidate(
         )
         return False
 
-    def reflect() -> bool:
-        return _reflect(
-            app,
-            session,
-            chat_session,
-            label=label,
-            trigger=trigger,
-            outcome=outcome.value,
-            refused=refused,
-            announce=announce,
-            carry_on=carry_on,
-        )
+    record = _build_the_record(
+        session,
+        chat_session,
+        label=label,
+        trigger=trigger,
+        outcome=outcome,
+        refused=refused,
+        handoff=handoff,
+    )
+
+    def reflect() -> None:
+        _reflect(app, session, chat_session, label=label)
 
     try:
         ended = await ending(reflect)
@@ -699,14 +824,211 @@ async def _consolidate(
         log.warning("%s could not be cleared, so it stands", label)
         return False
     log.info("consolidated %s (%s, %s)", label, trigger, outcome.value)
-    # A CONTINUE says nothing here on purpose: the package IS what the person
-    # is told, and it arrives when the reflection has something to put in it.
-    # A second sentence now would be the app talking about itself twice.
+    if not _write_the_record(record, label):
+        record = None
+    await _hand_over(
+        app,
+        session,
+        chat_session,
+        label=label,
+        outcome=outcome,
+        refused=refused,
+        record=record,
+        announce=announce,
+        carry_on=carry_on,
+    )
+    return True
+
+
+def _build_the_record(
+    session: Any,
+    chat_session: Any,
+    *,
+    label: str,
+    trigger: str,
+    outcome: "Continuation",
+    refused: str,
+    handoff: "Handoff | None",
+) -> Any:
+    """This boundary's checkpoint, or `None` when there is nothing to record.
+
+    `handoff is None` is the cut-off conversation: it was asked where the work
+    stood and never said, so there is nothing to write down and nothing to
+    invent. An empty row would be worse than none, because the absence of a
+    checkpoint is how a later reader knows a boundary handed nothing over.
+
+    Never raises. The boundary is decided and the conversation is about to be
+    cleared; nothing here may turn that into a failed turn.
+    """
+    if handoff is None:
+        return None
+    try:
+        from tesseract.orchestrator import checkpoints
+
+        context = getattr(chat_session, "tool_context", None)
+        return checkpoints.build(
+            session_id=str(getattr(session, "session_id", "") or ""),
+            chat_id=str(getattr(context, "chat_id", "") or ""),
+            trigger=trigger,
+            outcome=outcome.value,
+            refused=refused,
+            state=handoff.state,
+        )
+    except Exception:
+        log.exception("the record for %s could not be built", label)
+        return None
+
+
+def _write_the_record(record: Any, label: str) -> bool:
+    """Put this boundary's record on disk. True when it landed.
+
+    The store's own answer, not the object handed to it: `write` returns the id
+    it appended, or `None` when the disk would not take it, and a record that
+    never landed must not be handed on as one that did. `False` means the
+    package is built from nothing, which is honest, rather than from the
+    PREVIOUS boundary's row, which is what reading the store back would give.
+
+    Never raises. The conversation has already been cleared.
+    """
+    if record is None:
+        return False
+    try:
+        from tesseract.orchestrator import checkpoints
+
+        if checkpoints.write(record) is None:
+            log.warning("the record for %s was not written", label)
+            return False
+        return True
+    except Exception:
+        log.exception("the record for %s was not written", label)
+        return False
+
+
+async def _hand_over(
+    app: Any,
+    session: Any,
+    chat_session: Any,
+    *,
+    label: str,
+    outcome: "Continuation",
+    refused: str,
+    record: Any,
+    announce: Callable[[str], Awaitable[None]] | None,
+    carry_on: Callable[[str, str], Awaitable[None]] | None,
+) -> bool:
+    """Give the cleared conversation what the boundary wrote down, and tell
+    the person.
+
+    Built HERE, moments after the clear, from the record the agent wrote at the
+    start of all this. It used to ride the reflection's completion callback,
+    because the record did not exist until that model turn finished, and the
+    whole apparatus that went with it goes too: the package no longer lists
+    what reflection saved, and nothing has to ask whether the conversation it
+    was written for is still the one on screen, because no detached call runs
+    in between.
+
+    A RESET leaves the package in front of the conversation for whoever speaks
+    next. A CONTINUE starts a turn against it, and the person is told first:
+    they see where the work stood before the work moves on it.
+
+    Never raises. The boundary has happened.
+    """
+    from tesseract.brain import continuity
+
+    text = ""
+    try:
+        text = continuity.package_for(record)
+    except Exception:
+        log.exception("the package for %s could not be built", label)
     if outcome is Continuation.RESET and announce is not None:
         try:
             await announce(
-                REFUSED_NOTICE.format(reason=refused) if refused else RESET_NOTICE
+                CUT_OFF_NOTICE
+                if refused == CUT_OFF_REASON
+                else REFUSED_NOTICE.format(reason=refused) if refused
+                else RESET_NOTICE
             )
         except Exception:
             log.exception("reset notice failed for %s", label)
+    if not text:
+        return False
+    if getattr(session, "torn_down", False):
+        # The surface dropped this session while the clear was in flight.
+        # Writing into its history and persisting it puts a package into a
+        # conversation nobody can reach, and starting a turn on it streams to
+        # a socket nobody holds. CC-16's hole, in the shape this path has it.
+        log.info("continuity: %s ended before the package could land", label)
+        return False
+    carrying = outcome is Continuation.CONTINUE and carry_on is not None
+    if not carrying:
+        # The half a RESET leaves behind, and what a CONTINUE falls back to on
+        # a surface that cannot start a turn of its own. The carried half does
+        # not call this: that turn's own first message carries the same text
+        # under the same kind of mark, and noting it here as well would put the
+        # package into the history twice.
+        if not _note_the_package(chat_session, label, text):
+            return False
+        await asyncio.to_thread(_persist, session, label)
+    if announce is not None:
+        try:
+            await announce(text)
+        except Exception:
+            log.exception("continuity: could not tell %s about it", label)
+    # Last, so the person has the package in front of them before the work
+    # moves on it.
+    if carrying:
+        _carry_the_work_on(app, carry_on, text, label)
     return True
+
+
+def _note_the_package(chat_session: Any, label: str, text: str) -> bool:
+    """Put the package in front of the cleared conversation, to be read
+    whenever somebody next speaks."""
+    try:
+        chat_session.note_continuity(text)
+    except Exception:
+        log.exception("continuity: could not put the package in front of %s", label)
+        return False
+    return True
+
+
+def _persist(session: Any, label: str) -> None:
+    """Write the package to disk with the conversation it was put in front of.
+
+    The boundary persisted an EMPTY history on its way past, because at that
+    moment the package did not exist. Left to the periodic autosave, a reload
+    inside its interval shows a thread the boundary cleared and nothing saying
+    why. It is one write and it lands with the record already open.
+    """
+    try:
+        from tesseract.mirror.server import chat_store
+
+        chat_store.persist_session_chats(session)
+    except Exception:
+        log.exception("continuity: the package was not written to disk for %s", label)
+
+
+def _carry_the_work_on(app: Any, carry_on: Any, text: str, label: str) -> None:
+    """Start the turn that reads the package, and return without awaiting it.
+
+    `continue` says the work goes on, and until CC-26 nothing started it: the
+    package landed in a cleared conversation and waited for somebody to speak.
+    Measured on the operator's phone, 2026-09-10, at a boundary whose record
+    carried a filled `Remaining` and `Next`: nothing moved until they typed.
+
+    **Spawned here rather than awaited, and that is structural rather than a
+    convention the surfaces have to remember.** This runs at the end of a turn,
+    inside that turn's own flow, and a turn awaited here would be one turn
+    nested inside another. Spawning is also what makes the loop a loop rather
+    than a stack that deepens once per boundary.
+
+    Never raises. The boundary has already happened and the package has already
+    been handed over; a turn that could not be started is one thing going
+    wrong, not two.
+    """
+    try:
+        from tesseract.mirror.server.ws_connection import _spawn_tracked
+
+        _spawn_tracked(app, carry_on(text, "carry_on"), f"carry_on:{label}")
+    except Exception:
+        log.exception("continuity: %s could not carry the work on", label)

@@ -231,6 +231,42 @@ class Continuation(str, Enum):
     RESET = "reset"
 
 
+@dataclass(frozen=True)
+class Handoff:
+    """What a turn asked for, and where it says the work stands.
+
+    One object because it is one answer. The agent writes the nine fields in
+    the same call in which it asks for a boundary, so a handoff belonging to
+    some earlier turn cannot exist: there is nothing to match up, nothing to
+    age, and nothing for the boundary to decide about which record is this
+    one's.
+
+    `state` is the model's and nothing in it is trusted for shape.
+    `checkpoints.build` cleans every field to a bounded string or a bounded
+    list of them, and this carries it there untouched.
+    """
+
+    mode: Continuation
+    state: dict[str, Any] = field(default_factory=dict)
+
+    def carries_work(self) -> bool:
+        """Whether there is anything here for a later turn to pick up.
+
+        Read off `remaining` and `next_action` only. The other seven fields
+        describe work that HAPPENED; these two are the only ones that describe
+        work that has not. A handoff with neither is the agent saying it is
+        finished, which is an answer and not an omission.
+        """
+        remaining = self.state.get("remaining")
+        if isinstance(remaining, str):
+            remaining = [remaining] if remaining.strip() else []
+        if isinstance(remaining, (list, tuple)) and any(
+            str(item).strip() for item in remaining
+        ):
+            return True
+        return bool(str(self.state.get("next_action") or "").strip())
+
+
 _RUNTIME_LATE_PROMPT = "late_prompt"
 _RUNTIME_RUNNING_SUMMARY = "running_summary"
 # What the last consolidation carried over, written into the conversation it
@@ -271,6 +307,12 @@ RUNTIME_ORIGINS: frozenset[str] = frozenset({
     # turn that reads it are one message rather than two, and the same mark
     # keeps the operator's name off sentences they never typed.
     "carry_on",
+    # The runtime asking a conversation where the work stood, because it hit
+    # the ceiling without saying. A separate mark from `carry_on`: that one is
+    # the work moving on, this one is the work being asked to account for
+    # itself before anything moves, and the operator reading over the
+    # assistant's shoulder needs to tell them apart.
+    "handoff_asked",
 })
 KEEP_LAST_TURNS = 3
 # Hard floor on the recall_context content kept inside the latest user
@@ -1740,14 +1782,24 @@ class ChatSession:
     #: nothing could answer "has the guard been holding this conversation
     #: down?" from any surface. `context_report` reads this one.
     _guard_firings_this_session: int = field(default=0, repr=False)
-    #: What this turn asked to happen to itself once it is over: "continue",
-    #: "reset", or "" for carrying on, which is the ordinary case. Written by
-    #: `session_continue` through `ToolContext.request_continuation` and read
-    #: at the turn boundary by `after_turn`, because `reset()` rewrites
-    #: `history` in place: acting on it inside the turn discards the assistant
-    #: message carrying the pending `tool_use` block before its `tool_result`
-    #: is appended, and the next request is malformed.
-    _continuation: str = field(default="", repr=False)
+    #: What this turn asked to happen to itself once it is over, and where it
+    #: says the work stands. `None` is carrying on, which is the ordinary case.
+    #: Written by `session_continue` through
+    #: `ToolContext.request_continuation` and read at the turn boundary by
+    #: `after_turn`, because `reset()` rewrites `history` in place: acting on
+    #: it inside the turn discards the assistant message carrying the pending
+    #: `tool_use` block before its `tool_result` is appended, and the next
+    #: request is malformed.
+    _continuation: "Handoff | None" = field(default=None, repr=False)
+    #: How many times the runtime has asked this conversation for a handoff it
+    #: did not volunteer. A hard boundary has no call in flight to answer into,
+    #: so it starts a turn to ask; this is the circuit breaker on that loop,
+    #: and the second unanswered ask cuts the conversation off rather than
+    #: asking a third time.
+    #:
+    #: Cleared by `reset()`, for the reason `_owes_a_boundary` and the nudge
+    #: are: state about a conversation must not outlive the conversation.
+    _handoff_asks: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         # Cross-link the spawn registry into ToolContext so tools can
@@ -2987,8 +3039,10 @@ class ChatSession:
             self._guard_firings_this_turn = 0
             # A turn that died before the boundary must not hand its decision
             # to the next one: the conversation it wanted to leave behind is
-            # not the conversation that would be cleared.
-            self._continuation = ""
+            # not the conversation that would be cleared. The handoff goes with
+            # it, and has to: it describes where the work stood at the end of a
+            # turn that never reached its end.
+            self._continuation = None
             user_message: dict[str, Any] = {
                 "role": "user",
                 "content": user_text,
@@ -4276,28 +4330,58 @@ class ChatSession:
         if run_error is not None:
             raise run_error
 
-    def request_continuation(self, mode: str) -> None:
-        """Record what should happen to this conversation once the turn ends.
+    def request_continuation(
+        self, mode: str, state: dict[str, Any] | None = None
+    ) -> None:
+        """Record what should happen to this conversation once the turn ends,
+        and where the turn says the work stands.
 
         Raises `ValueError` on a mode that is not one of `Continuation`'s, so a
         caller that misspells it hears about it instead of having its decision
         silently dropped at the boundary.
 
-        Last call wins. A turn that asks twice has changed its mind, and
-        carrying both would mean clearing a conversation twice on its way
-        out.
+        Last call wins, and it wins for BOTH halves. A turn that asks twice has
+        changed its mind, and carrying both would mean clearing a conversation
+        twice on its way out; merging the two handoffs would mean a boundary
+        acting on a description of the work the agent has already replaced.
         """
-        self._continuation = Continuation(mode).value
+        self._continuation = Handoff(
+            mode=Continuation(mode),
+            state=dict(state) if isinstance(state, dict) else {},
+        )
 
-    def take_continuation(self) -> str:
+    def take_continuation(self) -> "Handoff | None":
         """What this turn asked for, cleared as it is read.
 
         Cleared here rather than by the reader, because the boundary acts on it
-        once and a mode left behind fires again at the end of the next turn
+        once and a decision left behind fires again at the end of the next turn
         against a conversation that never asked.
         """
-        mode, self._continuation = self._continuation, ""
-        return mode
+        asked, self._continuation = self._continuation, None
+        return asked
+
+    def hand_back_continuation(self, asked: "Handoff") -> None:
+        """Put a decision back after a boundary that could not happen.
+
+        `take_continuation` reads by clearing, so a refused clear would
+        otherwise swallow both the answer the agent gave and the handoff it
+        wrote, and the next turn would meet the plain threshold knowing
+        nothing about either. Separate from `request_continuation` because
+        nothing is being decided here: the object goes back exactly as it
+        came out.
+        """
+        self._continuation = asked
+
+    def asked_for_a_handoff(self) -> int:
+        """Count this conversation being asked for a handoff, and say how many
+        times it now has been.
+
+        The runtime asks only where it cannot refuse into a call in flight,
+        which is a hard boundary. `1` is the first ask; anything above the cap
+        in `after_turn` is a conversation that was asked and did not answer.
+        """
+        self._handoff_asks += 1
+        return self._handoff_asks
 
     def reset(self) -> None:
         self.history.clear()
@@ -4340,6 +4424,10 @@ class ChatSession:
         # A boundary owed by the conversation being wiped is owed by nobody:
         # this IS the boundary, or an operator's `/reset` that outranks it.
         self._owes_a_boundary = False
+        # And a conversation that was asked for a handoff and did not give one
+        # is gone. Left standing, the fresh conversation on this object would
+        # start one ask from being cut off at its first hard boundary.
+        self._handoff_asks = 0
         # The observer's rolling window is per conversation and was the one
         # piece of its state that survived the wipe: the next observation
         # would have read the cleared conversation's turns alongside the new

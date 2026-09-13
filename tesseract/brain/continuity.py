@@ -19,14 +19,14 @@ rides inside that prefix from the next turn on.
 **References, never copies**, which costs nothing to hold to because the record
 already enforces it: `artifacts` holds paths and ids, and no field holds a body.
 
-The same rule is what makes the last section safe. The reflection writes what
-the conversation TAUGHT into the memory store, and it hands back a list of what
-it wrote. Naming those beside the state is the difference between "there is
-something in memory about this" and knowing where: retrieval ranks on the next
-question, and the note made ten minutes ago about the work still in progress is
-exactly the one a general search does not rank up. So the package carries the
-title and the path of each, and never the content, which `memory_get` and
-`file_read` already own.
+**It is built at the boundary, from the handoff the agent just wrote.** It used
+to be built when the reflection finished, because the reflection was what wrote
+the record, and that put a model turn between the conversation being cleared
+and anything being able to carry on: thirty-four seconds, measured on the
+operator's own run. It also listed what that reflection had saved to memory,
+and waiting for that list was the whole of the delay. What reflection saves
+reaches the operator through the inbox, and the turn that carries the work on
+finds the memories with `memory_search`.
 
 **No second bound, and nothing is summarised.** The record is bounded where it
 is written, at `checkpoints.LIST_CAP` items a list and `checkpoints.FIELD_CHARS`
@@ -96,96 +96,63 @@ def _blocks(checkpoint: Checkpoint) -> list[str]:
     return out
 
 
-def _written_down(saves: list[dict] | None) -> str:
-    """What the reflection put in memory, by title and by where it landed.
-
-    Never the content: `memory_get` and `file_read` own that, and a package
-    holding a copy is the drift this record's whole shape is written against.
-
-    A save that did NOT land is left out rather than listed with its status. A
-    package is what the next turn may rely on, and a line saying something was
-    blocked invites it to act as though the thing is there. The failure has its
-    own record in the workspace inbox, which is where the operator answers it.
-    """
-    if not saves:
-        return ""
-    lines: list[str] = []
-    for save in saves:
-        if not isinstance(save, dict):
-            continue
-        if save.get("status") not in ("saved", "completed"):
-            continue
-        title = str(save.get("title") or "").strip()
-        if not title:
-            continue
-        where = str(save.get("path") or save.get("memory_id") or "").strip()
-        lines.append(f"- {title}" + (f" ({where})" if where else ""))
-    if not lines:
-        return ""
-    return "\n".join(["Written down just now:", *lines])
-
-
-def render(checkpoint: Checkpoint, saves: list[dict] | None = None) -> str:
+def render(checkpoint: Checkpoint) -> str:
     """The package, or `""` when the boundary had nothing to say at all.
 
-    An empty checkpoint with nothing written down is a real answer and not a
-    failure: a conversation that was never about a piece of work leaves one,
-    and opening its successor with a heading and no content would be worse
-    than opening it with nothing.
+    An empty checkpoint is a real answer and not a failure: a conversation
+    that was never about a piece of work leaves one, and opening its successor
+    with a heading and no content would be worse than opening it with nothing.
     """
-    blocks = [] if checkpoint.is_empty() else _blocks(checkpoint)
-    written = _written_down(saves)
-    if written:
-        blocks.append(written)
-    if not blocks:
+    if checkpoint.is_empty():
         return ""
-    return "\n\n".join([LEAD, *blocks])
+    return "\n\n".join([LEAD, *_blocks(checkpoint)])
 
 
-#: A checkpoint that says nothing, so a reflection whose record did not land
-#: can still hand over what it wrote to memory. Losing one is not a reason to
-#: lose the other.
-_NOTHING = Checkpoint(
-    checkpoint_id="", ts="", session_id="", trigger="", outcome="",
-)
-
-
-def package_for(
-    checkpoint: Checkpoint | None, saves: list[dict] | None = None
-) -> str:
+def package_for(checkpoint: Checkpoint | None) -> str:
     """The package for one boundary, or `""` when there is none to give.
 
+    `None` is a boundary with no handoff behind it, which is the conversation
+    that was asked for one and never gave it. There is nothing to hand over
+    and nothing to invent, so it hands over nothing.
+
     Fails to nothing rather than raising. By the time this runs the boundary
-    has already reflected, archived and cleared the conversation, and a package
-    that cannot be built must not leave the person wondering what happened to
-    their thread.
+    has already archived and cleared the conversation, and a package that
+    cannot be built must not leave the person wondering what happened to their
+    thread.
     """
-    return render(checkpoint if checkpoint is not None else _NOTHING, saves)
+    if checkpoint is None:
+        return ""
+    return render(checkpoint)
 
 
 
 
 # ── Whether a boundary may hand anything over at all ────────────────
 #
-# "Continuation must have a reason", and the runtime's existing bound is the
-# wrong instrument for it: the failure breaker counts failures, and a loop that
-# continues successfully and achieves nothing never trips it.
+# "Continuation must have a reason", and there is exactly one now: the handoff
+# the agent wrote at THIS boundary has to say there is something left to do.
 #
-# The agent decides whether meaningful work remains and this does not argue
-# with that. What it refuses is a continue nothing is OWED for, which is a
-# different claim and is answered from the record rather than from an opinion:
-# a model asked "is there work left" answers yes cheaply, and three boundaries
-# reporting the same next action is the work not moving whatever it says.
+# It used to read the boundaries the conversation had already crossed, because
+# the record was written afterwards by a reflection and this boundary's did not
+# exist yet. Three rules lived there: nothing was owed last time, the same next
+# action came back, and a window of boundaries introduced nothing new. Only the
+# first survives, and it has moved onto the record in front of it rather than
+# the one behind.
 #
-# Read from the checkpoints the conversation has already written, because that
-# is the only place the answer exists: the boundary being decided has not
-# reflected yet.
+# The other two are deleted rather than tuned, on the operator's ruling that
+# reflection is an independent system with no weight on the decision. Both
+# compared SENTENCES the agent now writes itself, so rephrasing the next action
+# walked past either one, and `OPERATING.md` was teaching exactly that. A rule
+# the thing it judges can step over for free is worse than no rule: it
+# advertises a bound that is not there.
+#
+# What bounds a conversation that keeps writing real remaining items is what
+# bounds anything else that runs, which is the budget, and the runtime cutting
+# off a conversation that will not answer a hard boundary at all.
 
 
 @dataclass(frozen=True)
 class BoundaryBounds:
-    repeat_limit: int
-    cycle_window: int
     reflection_ceiling_seconds: float
 
 
@@ -205,179 +172,43 @@ def load_boundary_bounds() -> BoundaryBounds:
     raw = yaml.safe_load((config_dir() / "roles.yaml").read_text(encoding="utf-8"))
     section = _require(raw, "boundary", "roles.yaml")
     return BoundaryBounds(
-        repeat_limit=int(_require(section, "repeat_limit", "roles.yaml boundary")),
-        cycle_window=int(_require(section, "cycle_window", "roles.yaml boundary")),
         reflection_ceiling_seconds=float(
             _require(section, "reflection_ceiling_seconds", "roles.yaml boundary")
         ),
     )
 
 
-def why_not_continue(chat_id: str) -> str:
-    """Why this conversation may not answer `continue` again, or `""`.
+def why_not_continue(handoff: Checkpoint | None) -> str:
+    """Why this conversation may not carry the work on, or `""`.
 
-    Two refusals, both read off the record and neither an opinion about the
-    work:
+    One refusal, read off the handoff the agent wrote for THIS boundary:
+    it reported nothing remaining and no next action, so there is nothing for
+    the next turn to pick up.
 
-    1. **Nothing was owed last time.** The previous boundary answered
-       `continue` and reported neither a next action nor anything remaining.
-       Continuing again after that is continuing because continuing is
-       possible.
-    2. **The work is not moving.** Either the same next action came back
-       `repeat_limit` times in a row, or the last `repeat_limit` boundaries
-       introduced no next action this conversation had not already reported.
-       The second is what catches a cycle: two steps alternating forever look
-       like a fresh answer at every boundary and are not.
+    **That is an answer and not an omission**, which is why nothing asks again.
+    A handoff with neither field is the agent saying the work is finished, and
+    the right act is to leave the conversation behind. Asking it to reconsider
+    would make inventing a remaining item the cheapest way past the gate, which
+    is the evasion this rule is supposed to be free of.
 
-    **There is deliberately no bound on how many times a conversation may
-    carry on.** There was one, a count, and it was the only refusal here that
-    fired without evidence: real multi-phase work reaches five boundaries and
-    was stopped for arriving, while a two-step cycle sailed past every other
-    check. A count cannot tell those apart and the two rules above can, so the
-    count is gone rather than tuned. What bounds an endless conversation is
-    what bounds anything else that runs: the budget.
+    `None` is a boundary with no handoff at all, which is a different event:
+    the conversation was asked and did not answer. It is refused here too, and
+    `after_turn` is what decides that asking again is not worth it.
 
     A refusal is a sentence, because it is written onto the record and read by
     a person. Empty means the continue stands.
-
-    Fails OPEN. A record that cannot be read is not evidence that a loop is
-    running, and refusing on it would end a conversation for a disk error.
     """
-    try:
-        bounds = load_boundary_bounds()
-        # Enough history to see a cycle: the window plus what came before it,
-        # which is what "new to this conversation" is judged against. Declared
-        # rather than multiplied out of `repeat_limit`, because how far back a
-        # cycle counts as a cycle is its own question and a conversation whose
-        # run outgrows this reads a repeated action as new.
-        recent = checkpoints.recent_for_chat(chat_id, limit=bounds.cycle_window)
-    except Exception:  # noqa: BLE001
-        log.exception("continuity: could not read the boundaries %s has crossed", chat_id)
-        return ""
-    if not recent:
-        return ""
-
-    run = 0
-    for checkpoint in recent:
-        if checkpoint.outcome != "continue":
-            break
-        run += 1
-    if run == 0:
-        return ""
-
-    previous = recent[0]
-    if not previous.next_action and not previous.remaining:
+    if handoff is None:
         return (
-            "the boundary before this one carried the work on and reported "
-            "nothing left to do and nothing to do next, so there is nothing "
-            "for this one to carry"
+            "this conversation was asked where the work stood and did not "
+            "say, so there is nothing to carry on with"
         )
-
-    repeats = 0
-    for checkpoint in recent[:run]:
-        if checkpoint.next_action != previous.next_action:
-            break
-        repeats += 1
-    if previous.next_action and repeats >= bounds.repeat_limit:
+    if not handoff.next_action and not handoff.remaining:
         return (
-            f"the last {repeats} boundaries all reported the same next action, "
-            f"{previous.next_action!r}, so the work is not moving"
+            "you reported nothing left to do and nothing to do next, so there "
+            "is nothing for this conversation to carry on with"
         )
-
-    # The cycle check. A step recurring is normal — building, testing, then
-    # building again is work. A WINDOW of boundaries in which nothing is
-    # reported that was not reported before is not: it is the same ground
-    # being walked over. Needs history behind the window to judge against, so
-    # it cannot fire on a short run, which is where the rule above is the one
-    # that answers.
-    window = [c.next_action for c in recent[: bounds.repeat_limit] if c.next_action]
-    earlier = {c.next_action for c in recent[bounds.repeat_limit : run] if c.next_action}
-    if earlier and window and all(action in earlier for action in window):
-        # Unless the work is getting smaller. Revisiting steps while the list
-        # of what is left shrinks every time is convergence, and it is what
-        # finishing something actually looks like: the same two files edited
-        # again and again, one fewer thing wrong each pass. Refusing that would
-        # be the deleted count all over again in a narrower disguise, so the
-        # names going round are not enough on their own.
-        if not _still_shrinking(recent[: run], window_size=bounds.repeat_limit):
-            return (
-                f"the last {len(window)} boundaries reported nothing this "
-                f"conversation had not already reported, and nothing was "
-                f"finished either, so the work is going round rather than "
-                f"forward"
-            )
     return ""
-
-
-def _owed(checkpoint: Checkpoint) -> set[str]:
-    """What a boundary said was left, as items rather than as a number.
-
-    Compared loosely on purpose. These are sentences a model wrote at two
-    different moments about the same work, so "Fix the parser" and "fix the
-    parser." are the same thing owed twice and matching them exactly would
-    read a full stop as progress. Nothing stronger than case, surrounding
-    space and trailing punctuation is normalised: a rewrite that goes further
-    than that is a different description of the work, which is precisely what
-    the caller needs to be able to see.
-    """
-    items: set[str] = set()
-    for line in checkpoint.remaining:
-        text = " ".join((line or "").split()).casefold().rstrip(".,;:!? ")
-        if text:
-            items.add(text)
-    return items
-
-
-def _still_shrinking(run: list[Checkpoint], *, window_size: int) -> bool:
-    """Whether the work got smaller across the window, and not just shorter.
-
-    `run` is newest first. It compares what the newest boundary says remains
-    against what was owed just before the window opened.
-
-    Four things at once, because this is the exemption from the only refusal
-    left in `why_not_continue` and each of them has already been got wrong
-    once:
-
-    1. **Converging work is never refused.** Revisiting the same two steps
-       while closing items each pass is what finishing something looks like.
-       This is the property the deleted count broke, and refusing it in a
-       narrower disguise would be the same defect.
-    2. **A cycle is not excused.** Two steps alternating forever must still
-       reach the refusal.
-    3. **The evidence is read off the record**, never inferred from the
-       transcript or from how long the conversation has run.
-    4. **It is not a number the model can move without doing the work.** It
-       used to be `len(newest.remaining) < len(before.remaining)`, and a list
-       is a thing the model writes: merging two items into one sentence, or
-       simply reporting less, looked exactly like finishing one.
-
-    So it asks whether something that was owed is no longer owed, and it asks
-    it of items rather than of a count. A cycle owes the same things every
-    time, so nothing has closed and the refusal stands. Converging work has
-    closed at least one and carried the rest, so it is exempt.
-
-    The carried half is what makes the item comparison safe. A boundary whose
-    remaining list has nothing in common with the earlier one has not closed
-    items, it has rewritten the description, and a wholesale rewrite scores as
-    "everything closed" under set difference alone. Requiring something to
-    have been carried costs nothing real: work that is actually converging
-    still owes some of what it owed a few boundaries ago, or it would have
-    ended rather than continued.
-
-    A boundary that reported nothing remaining is not evidence of progress
-    here: it is the case the first refusal already answers, and treating an
-    empty list as "smallest" would let a conversation that stopped reporting
-    look like one that finished.
-    """
-    if len(run) <= window_size:
-        return False
-    newest, before = run[0], run[window_size]
-    owed_now, owed_before = _owed(newest), _owed(before)
-    if not owed_now or not owed_before:
-        return False
-    carried = owed_before & owed_now
-    closed = owed_before - owed_now
-    return bool(carried) and bool(closed)
 
 
 __all__ = [

@@ -81,7 +81,7 @@ core:
   - credential_list  # Your own accounts: service, username, purpose, and whether each is ready.
   # Checking your own state
   - autonomy_read  # Read what the Autonomy panel says, in the same sentences it shows.
-  - session_continue  # Carry the work into a fresh start, or finish with this conversation.
+  - session_continue  # Say where the work stands, then carry it into a fresh start or leave it behind.
   - system_diagnose  # Report this machine's runtime health in one call.
   # Finding a tool
   - tool_search  # Make a tool callable that is not in this turn's schema.

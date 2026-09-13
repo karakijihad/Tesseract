@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -47,26 +45,6 @@ REFLECTION_PROMPT = (
     "you decide. SOUL.md Growth is a distillate (3–5 bullets total), not a "
     "log. Most sessions: one diary entry, no growth bullet. Empty days are "
     "fine.\n\n"
-    "PASS 3 — what you were DOING. Not what the session taught you: what the "
-    "work was. Write it LAST, after any saves, as one fenced JSON block:\n\n"
-    "```json\n"
-    '{"objective": "", "phase": "", "completed": [], "remaining": [], '
-    '"next_action": "", "open_questions": [], "blocked_by": "", '
-    '"artifacts": []}\n'
-    "```\n\n"
-    "Leave a field empty when you do not know it. An empty field is recorded "
-    "as empty and that is useful; a guessed next action is not, because the "
-    "next context acts on it. `artifacts` holds paths and identifiers, never "
-    "file contents, and you do not need to write out where the project lives: "
-    "the runtime records that beside them. If this conversation was not about "
-    "a piece of work, return the block with every field empty.\n\n"
-    "`remaining` is WORK SOMEBODY WILL DO NEXT, and nothing else. Not what the "
-    "project has decided to leave out, not stages that need approval before "
-    "they can start, not standing scope notes. Those are true and they are not "
-    "remaining work, and this field is read as though they were: an empty "
-    "`remaining` is how the runtime knows the work is finished, so padding it "
-    "with things nobody is going to do says there is work left when there is "
-    "none. If a boundary decides on this, decide it honestly.\n\n"
     "One reflection pass, then stop."
 )
 
@@ -146,53 +124,33 @@ def _merge_result_metadata(call: dict[str, Any], chunk: Any) -> None:
 
 
 async def reflect_on_session(
-    session: ChatSession,
-    reason: str,
-    *,
-    trigger: str = "",
-    outcome: str = "",
-    refused: str = "",
-) -> tuple[list[dict[str, Any]], Any]:
-    """Run one bounded reflection turn. Returns the summaries and the
-    checkpoint this turn wrote.
+    session: ChatSession, reason: str
+) -> list[dict[str, Any]]:
+    """Run one bounded reflection turn. Returns what it saved.
 
-    The summaries are one per reflection-related tool call observed
-    (``memory_save`` / ``diary_append`` / ``soul_growth_propose``). Each entry
-    has the shape produced by `_summarize_reflection_call` plus result-side
-    fields (``memory_id``, ``path``, ``status``) merged from the matching
-    TOOL_RESULT chunk.
+    One per reflection-related tool call observed (``memory_save`` /
+    ``diary_append`` / ``soul_growth_propose``). Each entry has the shape
+    produced by `_summarize_reflection_call` plus result-side fields
+    (``memory_id``, ``path``, ``status``) merged from the matching TOOL_RESULT
+    chunk.
 
-    **The checkpoint is HANDED BACK rather than looked up afterwards.** What a
-    caller wants is the record THIS reflection wrote, and the store can only
-    answer "the newest one this chat has", which is a different thing the
-    moment a write fails: the caller would render the previous boundary's
-    state and believe it current. `None` means no record was written, and a
-    caller that needs one must treat that as nothing to say.
+    **It writes no checkpoint and gates nothing.** It used to write the record
+    a boundary hands over, which made it the one thing standing between a
+    conversation and its own continuity: the handover waited on a model turn
+    over the whole transcript, and a reflection that failed cost the work
+    rather than the learning. The agent writes that record itself now, at the
+    boundary, through `session_continue`. Reflection has one job, which is
+    learning, and it runs beside the boundary rather than inside it.
 
     Safe to cancel — ``KeyboardInterrupt`` / ``CancelledError`` propagate
     after logging.
-
-    ``trigger`` and ``outcome`` are the boundary's, and they are recorded on the
-    checkpoint this turn also writes. Keyword-only with empty defaults because
-    reflection is reachable from places that are NOT a boundary — the operator
-    typing `/reflect` is the live one — and a checkpoint from one of those
-    should say so rather than claim a trigger it never had.
-
-    ``refused`` is why a `continue` was turned into a `reset`, and it is
-    recorded for the same reason: the outcome alone cannot tell a conversation
-    the runtime stopped from one that finished its work.
     """
     if len(session.history) < MIN_HISTORY_FOR_REFLECTION:
-        return [], None
+        return []
     calls: list[dict[str, Any]] = []
     by_call_id: dict[str, dict[str, Any]] = {}
-    said: list[str] = []
     try:
-        result = await _reflect(session, reason, calls, by_call_id, said)
-        written = _write_checkpoint(
-            session, said, trigger=trigger, outcome=outcome, refused=refused,
-        )
-        return result, written
+        return await _reflect(session, reason, calls, by_call_id)
     finally:
         # Reflection is a summarisation pass, not a turn the operator reads.
         # `send` drains the pending spawn-completion queue like any other turn,
@@ -213,32 +171,18 @@ async def _reflect(
     reason: str,
     calls: list[dict[str, Any]],
     by_call_id: dict[str, dict[str, Any]],
-    said: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """The reflection turn, and the two things it now produces.
+    """The reflection turn: what it wrote through tools, and nothing else.
 
-    It read three chunk types and threw the model's prose away, which was right
-    while reflection only ever wrote through tools. The working state cannot be
-    written that way: it is one answer about the whole conversation rather than
-    a save, and a tool per field would be a tool call per field per boundary.
-    So the text is collected as well, and `_write_checkpoint` reads it.
-
-    `said` is optional, so a caller that only wants the saves is unchanged.
+    The model's prose is thrown away, which is right again. It was collected
+    for a while, because reflection had been made to report where the work
+    stood as well and that is one answer about the whole conversation rather
+    than a save. The agent writes that itself now, so what comes back here is
+    what it always was.
     """
     try:
         async for chunk in session.send(REFLECTION_PROMPT, runtime_origin="reflection"):
-            if chunk.type == ChunkType.TEXT:
-                # `.text`. A `StreamChunk` has never had `.content`, so this
-                # raised on the FIRST text chunk of every reflection from the
-                # day the text started being collected, and the `except
-                # Exception` below turned it into a warning nobody read: the
-                # saves came back, the checkpoint was written from nothing, and
-                # every boundary reported that it had nothing to say about the
-                # work. Found by running one live, which is why the phase asks
-                # for that and not for another test.
-                if said is not None and chunk.text:
-                    said.append(chunk.text)
-            elif chunk.type == ChunkType.TOOL_CALL_START:
+            if chunk.type == ChunkType.TOOL_CALL_START:
                 summary = _summarize_reflection_call(chunk.tool_call)
                 if summary is not None:
                     calls.append(summary)
@@ -258,82 +202,6 @@ async def _reflect(
         return calls
     await _attribute_skill_corrections(session, calls)
     return calls
-
-
-#: The fenced block PASS 3 asks for. Non-greedy and anchored on the LAST match,
-#: because the reflection may quote the empty template back while explaining
-#: itself and the answer is the one it finished with.
-_STATE_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-
-
-def _parse_state(said: list[str]) -> dict[str, Any] | None:
-    """Pull the working-state block out of what the reflection turn wrote.
-
-    Returns `None` when there is nothing parseable, which is a legitimate
-    outcome and not an error: a model that answered in prose has told us
-    nothing about the work, and a checkpoint recording that is more honest than
-    one assembled by reading the prose ourselves.
-
-    The LAST block wins. The prompt shows the model an empty template, and a
-    model that echoes the template before filling it in would otherwise have
-    its example read as its answer.
-    """
-    text = "".join(said)
-    if not text:
-        return None
-    matches = _STATE_BLOCK.findall(text)
-    for raw in reversed(matches):
-        try:
-            parsed = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
-
-
-def _write_checkpoint(
-    session: ChatSession,
-    said: list[str],
-    *,
-    trigger: str = "",
-    outcome: str = "",
-    refused: str = "",
-) -> Any:
-    """Record what this conversation was doing, and hand the record back.
-
-    Never raises. Reflection has already run and the boundary is about to fold
-    or end the conversation, so nothing here may turn a completed boundary into
-    a failed turn. The store is best-effort by the same reasoning and returns
-    `None` rather than raising; this catches the rest, including an import that
-    fails.
-
-    `None` therefore means the record did NOT land, and the caller is the only
-    one that can tell: the store still holds the PREVIOUS boundary's row, so
-    anything that asks it afterwards is answered, confidently, with state that
-    is one boundary stale.
-    """
-    try:
-        from tesseract.orchestrator import checkpoints
-
-        context = session.tool_context
-        checkpoint = checkpoints.build(
-            session_id=str(getattr(context, "session_id", "") or ""),
-            chat_id=str(getattr(context, "chat_id", "") or ""),
-            trigger=trigger,
-            outcome=outcome,
-            refused=refused,
-            state=_parse_state(said),
-        )
-        # The store's own answer, not the object we handed it: `write` returns
-        # the id it appended, or `None` when the disk would not take it, and
-        # a record that never landed must not be handed on as one that did.
-        if checkpoints.write(checkpoint) is None:
-            return None
-        return checkpoint
-    except Exception:  # noqa: BLE001
-        log.warning("reflection: the checkpoint was not written", exc_info=True)
-        return None
 
 
 async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[str, Any]]) -> None:
@@ -399,11 +267,10 @@ async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[st
 # between the clone and the live session beyond the (idempotent) tool
 # registry.
 
-#: `(saves, reason, checkpoint)`. The checkpoint is the record THIS reflection
-#: wrote, or `None` when none landed, and it is passed rather than looked up so
-#: a callback cannot render the previous boundary's state as if it were this
-#: one's (`reflect_on_session`).
-ReflectCompleteCb = Callable[[list[dict[str, Any]], str, Any], Awaitable[None]]
+#: `(saves, reason)`. It carried the checkpoint too, while reflection was what
+#: wrote one; the agent writes that at the boundary now and nothing downstream
+#: of a reflection needs it.
+ReflectCompleteCb = Callable[[list[dict[str, Any]], str], Awaitable[None]]
 ReflectErrorCb = Callable[[BaseException, str], Awaitable[None]]
 
 _active_reflect_tasks: "dict[int, asyncio.Task[Any]]" = {}
@@ -466,9 +333,6 @@ def reflect_in_background(
     *,
     on_complete: ReflectCompleteCb | None = None,
     on_error: ReflectErrorCb | None = None,
-    trigger: str = "",
-    outcome: str = "",
-    refused: str = "",
 ) -> "asyncio.Task[list[dict[str, Any]]] | None":
     """Spawn reflection on a snapshot of `session`. Returns the Task, or
     `None` if history is too short to reflect, or if a previous reflect
@@ -492,23 +356,19 @@ def reflect_in_background(
     async def _run() -> list[dict[str, Any]]:
         saves: list[dict[str, Any]] = []
         try:
-            # Bounded, because a boundary will not clear a conversation
-            # while its previous reflection is still running, and nothing
-            # else stops one. A provider call that never returns used to
-            # leave that conversation unable to consolidate for the life of
-            # the process: it kept its debt, retried every turn, and grew
-            # past its window with no way to bound it. The ceiling is
-            # `roles.yaml::boundary.reflection_ceiling_seconds`.
-            saves, written = await asyncio.wait_for(
-                reflect_on_session(
-                    clone, reason, trigger=trigger, outcome=outcome,
-                    refused=refused,
-                ),
+            # Bounded, so a provider call that never returns cannot hold a
+            # task open for the life of the process. Nothing waits on this
+            # any more: the boundary writes its own record and clears without
+            # asking whether a reflection is in flight, so the ceiling costs
+            # one conversation's learning rather than its continuity. The
+            # figure is `roles.yaml::boundary.reflection_ceiling_seconds`.
+            saves = await asyncio.wait_for(
+                reflect_on_session(clone, reason),
                 timeout=_reflection_ceiling(),
             )
             if on_complete is not None:
                 try:
-                    await on_complete(saves, reason, written)
+                    await on_complete(saves, reason)
                 except Exception:
                     log.exception("reflect_in_background on_complete failed (%s)", reason)
             return saves

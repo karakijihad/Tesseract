@@ -8,7 +8,7 @@ when the window fills and knows nothing about whether the task is finished.
 
 So the turn decides, and the decision is the same one from any surface.
 
-**There is one consolidation and it always reflects.** What this tool records is
+**There is one consolidation and it always reflects.** What this tool decides is
 only what happens afterwards: keep working with the room rebuilt, or leave the
 conversation behind. Whether the boundary was reached because the turn judged
 it or because the window filled changes nothing about the work done at it.
@@ -26,12 +26,24 @@ every prompt on every surface, so the model reads it whether or not it is
 looking at this schema. What belongs here is when to reach for THIS tool rather
 than a neighbouring one, and nothing about how to judge the work.
 
-**It takes effect at the END of the turn, not inside it.** `compact()` and
-`reset()` rewrite the history in place, and doing that mid-turn folds away the
-assistant message carrying the pending `tool_use` block before its
-`tool_result` is appended. This records the decision;
-`mirror/server/after_turn.py` acts on it, and that is the boundary both the
-cockpit and a channel already call.
+**One call carries both halves: the answer and the handoff.** Where the work
+stands is written by the agent that did it, in the same call, because they are
+one answer. The reflection used to reconstruct it afterwards from the
+transcript, which cost a model turn over the whole conversation, delayed the
+handover by as long as that turn took, and made a failed reflection cost the
+work rather than the learning. Asking the agent, which held the list all
+along, costs nothing.
+
+A handoff with nothing remaining and no next action is a real answer and not
+an omission: it says the work is finished, and the runtime turns the boundary
+into a `reset` that says so rather than asking again. The cheapest way out of
+being asked again is to invent a remaining item, so it never asks.
+
+**It takes effect at the END of the turn, not inside it.** `reset()` rewrites
+the history in place, and doing that mid-turn folds away the assistant message
+carrying the pending `tool_use` block before its `tool_result` is appended.
+This records the decision; `mirror/server/after_turn.py` acts on it, and that
+is the boundary both the cockpit and a channel already call.
 
 A turn that outgrows the ceiling on its own is answered the same way and for
 the same reason: it is let finish, and the boundary it owes is taken the
@@ -59,23 +71,76 @@ log = logging.getLogger(__name__)
 _CONFIRMED = {
     Continuation.CONTINUE: (
         "The work carries on at the end of this turn with the room made back. "
-        "What this conversation taught you is being written down, and you keep "
-        "the thread of what you were doing."
+        "What you wrote about where the work stands is handed to the turn "
+        "that follows, and what this conversation taught you is being written "
+        "to memory alongside it."
     ),
     Continuation.RESET: (
-        "This conversation ends at the end of this turn. What it taught you is "
-        "being written to memory in the background, and the next thing you are "
-        "asked starts from a clean slate."
+        "This conversation ends at the end of this turn. What you wrote about "
+        "where the work stands is kept and what it taught you is being written "
+        "to memory in the background, and the next thing you are asked starts "
+        "from a clean slate."
     ),
 }
 
 
 class SessionContinueInput(BaseModel):
+    """The answer, and the handoff that goes with it.
+
+    Every field but `mode` is optional and empty is a legitimate value. A
+    conversation that was never about a piece of work leaves them all empty,
+    and that is recorded rather than guessed at: the next context acts on what
+    is written here, so an invented next action is worse than none.
+    """
+
     mode: Continuation = Field(
         description=(
             "Which of the two answers this is. What each one means for the "
             "work, and the third answer that needs no call, are in "
             "OPERATING.md."
+        ),
+    )
+    objective: str = Field(
+        default="",
+        description="What this conversation was trying to achieve, in a line.",
+    )
+    phase: str = Field(
+        default="",
+        description="Where in that objective the work had got to.",
+    )
+    completed: list[str] = Field(
+        default_factory=list,
+        description="What actually got done here. One item per thing.",
+    )
+    remaining: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Work somebody will do next, and nothing else. Not what the "
+            "project decided to leave out, not stages waiting on approval, "
+            "not standing scope notes. Those are true and they are not "
+            "remaining work. Leaving this empty alongside an empty "
+            "`next_action` says the work is finished, and the runtime leaves "
+            "the conversation behind rather than carrying it on."
+        ),
+    )
+    next_action: str = Field(
+        default="",
+        description="The single step to take first, if the work carries on.",
+    )
+    open_questions: list[str] = Field(
+        default_factory=list,
+        description="What is undecided and who has to decide it.",
+    )
+    blocked_by: str = Field(
+        default="",
+        description="What is in the way, if anything is.",
+    )
+    artifacts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Paths and identifiers, never file contents. You do not need to "
+            "say where the project lives: the runtime records that beside "
+            "them."
         ),
     )
 
@@ -87,13 +152,16 @@ class SessionContinueTool(Tool):
 
     group: ClassVar[str] = "checking-your-state"
     summary: ClassVar[str] = (
-        "Carry the work into a fresh start, or finish with this conversation."
+        "Say where the work stands, then carry it into a fresh start or leave "
+        "it behind."
     )
     use_when: ClassVar[str] = (
         "Use when you have decided this conversation should end, on the "
-        "grounds OPERATING.md gives for each answer. The call records what "
-        "you decided; the runtime carries it out once the turn is over, so "
-        "finish what you are saying first."
+        "grounds OPERATING.md gives for each answer. Say where the work "
+        "stands in the same call: what it was for, what got done, what is "
+        "left and what to do first. That is the only record the next context "
+        "gets, and nothing else writes it. The runtime carries the decision "
+        "out once the turn is over, so finish what you are saying first."
     )
     not_when: ClassVar[str] = (
         "for a conversation you have not decided to end, which needs no call "
@@ -138,8 +206,9 @@ class SessionContinueTool(Tool):
                 is_error=True,
             )
         mode = tool_input.mode
+        state = tool_input.model_dump(exclude={"mode"})
         try:
-            context.request_continuation(mode.value)
+            context.request_continuation(mode.value, state)
         except Exception as exc:
             log.exception("session_continue: recording the decision failed")
             return ToolResult(

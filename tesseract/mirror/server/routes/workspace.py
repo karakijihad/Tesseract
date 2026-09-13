@@ -1342,6 +1342,11 @@ async def _commit_vault_raw_ingest_batch(
                 decisions[relpath] = "denied"
 
     vault_manager, indexer, librarian = _resolve_vault_dependencies(app)
+    # `cursor_path()` honours a TESSERACT_HOME override unconditionally. This
+    # route used to honour it only when `app` was not None, which disagreed with
+    # the job writing the same file: `_resolve_home`'s own reason for reading the
+    # environment is that a test must not touch the production tree. One file,
+    # one answer, and the unified one is the job's.
     cursor = cursor_path()
 
     try:

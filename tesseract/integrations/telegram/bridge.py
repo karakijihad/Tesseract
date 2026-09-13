@@ -100,7 +100,7 @@ from tesseract.integrations.telegram.state import (
 )
 from tesseract.lib import last_seen
 from tesseract.mirror.server.after_turn import after_turn
-from tesseract.mirror.server.handoff import hand_off
+from tesseract.mirror.server.reflect import start_reflection
 from tesseract.mirror.server.event_log import EventLog
 from tesseract.mirror.server import spawn_wake
 from tesseract.config.runtime_limits import (
@@ -164,6 +164,19 @@ _COULD_NOT_CARRY_ON = (
     "I cleared this conversation and could not pick the work back up. What it "
     "taught me is written down. Ask me where things stood and I will read it "
     "back."
+)
+
+#: What the conversation is asked when the operator wants the thread closed
+#: AND the state handed over. The same shape as the runtime's own ask at a
+#: hard boundary, said to the model and read by the operator over its
+#: shoulder, and the answer to it is an ordinary `session_continue` call so
+#: the boundary that follows is the ordinary one.
+_ASK_BEFORE_CLEARING = (
+    "The operator is closing this thread and wants where the work stood "
+    "carried into the next one. Wrap up now with `session_continue`: what "
+    "this was for, what got done, what is left and what to do first. Choose "
+    "`continue` if the work goes on and `reset` if it is finished. Keep "
+    "anything you say short. This thread is being cleared either way."
 )
 
 #: The same sentence for an approval answered after its turn had given up.
@@ -1114,10 +1127,10 @@ class TelegramBridge:
                 session=session,
                 channel=self.name, chat_id=chat_key,
                 announce=lambda text: self._send_outbound(message.chat_id, text),
-                carry_on=lambda text: self._drive_turn_in_its_place(
+                carry_on=lambda text, origin: self._drive_turn_in_its_place(
                     session, message.chat_id, text,
                     could_not_run=_COULD_NOT_CARRY_ON,
-                    runtime_origin="carry_on",
+                    runtime_origin=origin,
                     nothing_to_add=_NOTHING_LEFT_TO_CARRY,
                 ),
                 ending=lambda reflect: self._start_fresh_thread(
@@ -3106,12 +3119,14 @@ class TelegramBridge:
 
         **`reflect` is called, and it has to be called before the wipe.** It
         was accepted and ignored, so the agent's own reset on a channel wrote
-        no memory deltas and no checkpoint while the same answer in the cockpit
-        wrote both, and the operator's `/clear` on this same surface wrote them
-        too. Reflection reads a snapshot taken when it is called
+        no memory deltas while the same answer in the cockpit wrote them, and
+        the operator's `/clear` on this same surface wrote them too. Reflection
+        reads a snapshot taken when it is called
         (`session_ops.clone_for_reflection`), so calling it after `reset()`
         would reflect on an empty conversation. It returns at once and runs in
-        the background, so it costs this teardown nothing.
+        the background, so it costs this teardown nothing, and its answer is
+        not asked for: what a conversation taught is not what decides whether
+        it may be cleared.
         """
         await self._stop_autosave(chat_id)
         durable = durable_chat_id(self.name, str(chat_id))
@@ -3137,23 +3152,10 @@ class TelegramBridge:
             self._start_autosave(chat_id, session)
             return False
         if reflect is not None:
-            # Its answer is believed, the way the archive's above is. `False`
-            # means this boundary may not reflect yet, and wiping anyway is a
-            # conversation cleared with nothing written down and nothing to
-            # hand over. The thread stands and the next turn asks again.
             try:
-                may_clear = reflect()
+                reflect()
             except Exception:
                 log.exception("channel handoff: the reflection could not be started")
-                may_clear = True
-            if not may_clear:
-                log.warning(
-                    "channel handoff: %s may not reflect yet, so the thread "
-                    "stands rather than being cleared without a record",
-                    durable,
-                )
-                self._start_autosave(chat_id, session)
-                return False
         drop_record(durable)
         session.chat_session.reset()
         session.started_at = datetime.now(timezone.utc).isoformat()
@@ -3237,37 +3239,66 @@ class TelegramBridge:
             # under different instructions, held the person on `thinking…` for
             # the length of an extra turn, and left nothing in the workspace
             # inbox the operator could read afterwards.
+            # YES is the answer to "hand it back", not to "reflect": both
+            # answers reflect, and this is the one that also carries where the
+            # work stood into the fresh thread.
+            #
+            # **The handoff is asked for, not reconstructed.** It used to come
+            # out of the reflection, which read the transcript afterwards and
+            # delivered its package a model turn late. The agent writes it now,
+            # so this asks the conversation for one and the boundary at the end
+            # of THAT turn does the clearing, the recording and the handing
+            # over, exactly as it does for a boundary the agent reached itself.
+            # A conversation too short to have anything to say, or one that
+            # will not answer, still gets cleared: `after_turn` bounds that.
+            wrapped_up = False
             try:
                 session = self._session_for(message.chat_id, reset=False)
-                reflecting = hand_off(
-                    self._app,
-                    session,
-                    session.chat_session,
-                    reason="channel_clear",
-                    label="clear",
-                    # YES is the answer to "hand it back", not to "reflect".
-                    # Both answers reflect and both write the record; this is
-                    # the one that also sends the package into the fresh
-                    # thread when the reflection has finished building it.
-                    deliver=lambda text: self._send_outbound(message.chat_id, text),
+                # The generation BEFORE the turn. `reset()` bumps it, so this
+                # is how the operator's clear finds out whether the boundary
+                # at the end of the wrap-up turn actually happened. Asked of
+                # the conversation rather than of its history, because a
+                # boundary leaves the package behind and a history of one
+                # message is not the same claim as a conversation that was
+                # cleared.
+                before = getattr(session.chat_session, "conversation_generation", None)
+                await self._drive_turn_in_its_place(
+                    session, message.chat_id, _ASK_BEFORE_CLEARING,
+                    could_not_run=_COULD_NOT_CARRY_ON,
+                    runtime_origin="handoff_asked",
+                    nothing_to_add=_NOTHING_LEFT_TO_CARRY,
+                )
+                now = getattr(session.chat_session, "conversation_generation", None)
+                wrapped_up = before is not None and now is not None and now > before
+            except Exception:
+                log.exception(
+                    "telegram: /clear could not ask for a handoff on chat=%s",
+                    message.chat_id,
+                )
+            if wrapped_up:
+                return True
+            # It was asked and did not wrap up, or the turn could not run at
+            # all. The operator asked for this thread to be gone and it goes:
+            # clearing only when the agent cooperates would make `/clear` a
+            # request rather than an instruction.
+            try:
+                session = self._session_for(message.chat_id, reset=False)
+                start_reflection(
+                    self._app, session, session.chat_session,
+                    reason="channel_clear", label="clear",
                 )
             except Exception:
-                # The operator asked to close the thread. Not closing it
-                # because the distillation could not be started leaves them
-                # looking at a conversation they told to go away.
                 log.exception(
                     "telegram: /clear reflection failed to start for chat=%s",
                     message.chat_id,
                 )
-                reflecting = False
             await self.clear_session(message.chat_id)
             await self._safe_send(
                 chat_id=message.chat_id,
                 text=(
-                    "🧹 Cleared. I am distilling what this thread taught me in "
-                    "the background. Next message starts a fresh thread."
-                    if reflecting
-                    else "🧹 Cleared. Next message starts a fresh thread."
+                    "🧹 Cleared. I could not wrap the thread up first, so "
+                    "nothing was carried over. Next message starts a fresh "
+                    "thread."
                 ),
             )
             return True
@@ -3281,12 +3312,9 @@ class TelegramBridge:
             # record is still written and `recall_history` still reaches it.
             try:
                 session = self._session_for(message.chat_id, reset=False)
-                hand_off(
-                    self._app,
-                    session,
-                    session.chat_session,
-                    reason="channel_clear",
-                    label="clear",
+                start_reflection(
+                    self._app, session, session.chat_session,
+                    reason="channel_clear", label="clear",
                 )
             except Exception:
                 log.exception(
@@ -3539,10 +3567,10 @@ class TelegramBridge:
                 session=session,
                 channel=self.name, chat_id=chat_key,
                 announce=lambda text: self._send_outbound(tg_chat_id, text),
-                carry_on=lambda text: self._drive_turn_in_its_place(
+                carry_on=lambda text, origin: self._drive_turn_in_its_place(
                     session, tg_chat_id, text,
                     could_not_run=_COULD_NOT_CARRY_ON,
-                    runtime_origin="carry_on",
+                    runtime_origin=origin,
                     nothing_to_add=_NOTHING_LEFT_TO_CARRY,
                 ),
                 ending=lambda reflect: self._start_fresh_thread(
