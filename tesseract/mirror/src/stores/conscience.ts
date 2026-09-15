@@ -362,6 +362,24 @@ export interface CacheTurn {
   hit_rate: number | null;
 }
 
+/** One model call, as far as the prompt cache is concerned.
+ *
+ *  Kept separate from `CacheTurn`: a turn's own hit rate is an average, and a
+ *  single cold-start call inside an otherwise hot turn is averaged away and
+ *  never seen. `hit_rate` is `null`, never 0, on the same terms as a turn's:
+ *  a provider that said nothing and a provider that said zero are different
+ *  facts, and only the second is a miss. */
+export interface CacheCall {
+  ts: string;
+  input_tokens: number;
+  cached_tokens: number | null;
+  hit_rate: number | null;
+  cost_usd: number;
+  turn_id: string;
+  model: string;
+  role: string;
+}
+
 export interface CacheSummary {
   turns: number;
   calls: number;
@@ -386,6 +404,11 @@ export interface CacheResponse {
   latest: CacheTurn[];
   /** The same window ranked by what each turn re-read, worst first. */
   turns: CacheTurn[];
+  /** Every call in the window, oldest first, capped to the newest ones. See
+   *  the backend's `cache_report.CALL_CAP` for the number and why. Optional
+   *  only for a reading built before this list existed; the live route
+   *  always sends it, empty or not. */
+  calls?: CacheCall[];
   ledger: boolean;
 }
 

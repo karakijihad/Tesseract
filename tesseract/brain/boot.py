@@ -2280,55 +2280,7 @@ def build_tool_registry(
     registry.register(AgendaCommentTool(store=agenda_store))
     registry.register(TaskProposeTool(store=agenda_store))
     registry.register(TaskWorkTool(store=agenda_store))
-
-    # Strong references to sends still in flight: the loop holds a task only
-    # weakly, and a message collected mid-send would vanish without a log.
-    _notify_tasks: set[Any] = set()
-
-    def _notify_task_closed(item, status, by) -> None:
-        """Tell the operator a task closed, and ask for their one-key verdict.
-
-        `on_closed` is called after the transition already happened, so this
-        can only ever log: the send itself is scheduled in the background
-        rather than awaited, which is what keeps a slow or failing phone
-        message from delaying or failing the close it is reporting on.
-        `None` in the REPL and in every test, where `app` is `None` and there
-        is nobody to tell.
-        """
-        if app is None:
-            return
-        from tesseract.orchestrator.autonomy.models import AgendaStatus
-
-        async def _send() -> None:
-            try:
-                # Built and stored by the server at startup, before any turn
-                # can close a task. Absent means nothing routes messages here.
-                notifier = app.get("outbound_notifier")
-                if notifier is None:
-                    return
-                await notifier.notify("task_closed", {
-                    "item_id": item.id,
-                    "goal": (item.goal or "")[:200],
-                    "outcome": "done" if status is AgendaStatus.DONE else "failed",
-                    "verified_by": by,
-                })
-            except Exception:  # noqa: BLE001 - the task is closed either way
-                logger.exception(
-                    "task_close: could not notify the operator for %s", item.id
-                )
-
-        import asyncio
-
-        try:
-            task = asyncio.create_task(_send(), name=f"task_closed_notify:{item.id}")
-            _notify_tasks.add(task)
-            task.add_done_callback(_notify_tasks.discard)
-        except RuntimeError:
-            logger.warning("task_close: no running loop to notify for %s", item.id)
-
-    registry.register(
-        TaskCloseTool(store=agenda_store, on_closed=_notify_task_closed)
-    )
+    registry.register(TaskCloseTool(store=agenda_store))
 
     from tesseract.kernel.tools.autonomy_read import AutonomyReadTool
     from tesseract.kernel.tools.channel_notify import ChannelNotifyTool

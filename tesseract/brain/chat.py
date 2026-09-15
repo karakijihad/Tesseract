@@ -1684,6 +1684,28 @@ class ChatSession:
     #: "not measured yet"; zero is a real answer for a session with no
     #: registry. Dropped by `refresh_head`, which is what a boundary calls.
     _tools_tokens_cached: int | None = field(default=None, repr=False)
+    #: The working set's `core` names, held for the life of a conversation
+    #: the same way `_held_head` holds the prompt head: read once, reused
+    #: until a boundary. `tier` is mutated in place on the live `Tool`
+    #: instances the moment a working-set proposal is applied
+    #: (`boot._apply_tool_tiers`), which is shared across every running
+    #: conversation, so a live read inside `_tool_schemas` would let an
+    #: ambient change move a request's tools array mid-conversation, the
+    #: exact class of cache-busting `_head_for_turn` exists to prevent for
+    #: the head. `None` means "not held yet", the same as `_held_head`.
+    #: See `_core_tools_for_turn`.
+    _held_core_tools: frozenset[str] | None = field(default=None, repr=False)
+    #: Which conversation `_held_core_tools` was taken for, keyed the same
+    #: way as `_held_for`. A separate field rather than reusing `_held_for`:
+    #: the head and the tool set are two different things a boundary clears,
+    #: and a future change to one hold's timing must not silently retime the
+    #: other.
+    _held_core_tools_for: str | None = field(default=None, repr=False)
+    #: Whether this conversation has already logged that a working-set
+    #: change is being held back. Sticky for the conversation's life so the
+    #: line prints once, not on every turn the change stays pending; cleared
+    #: by `refresh_head` like the snapshot it describes.
+    _held_core_tools_notice: bool = field(default=False, repr=False)
     _observer_subscriber: Any | None = field(default=None, repr=False)
     _observer_last_index: int = field(default=0, repr=False)
     # This conversation's own rolling window into the observer. It lives here
@@ -2449,9 +2471,16 @@ class ChatSession:
         which is fine for reading a log back and is not an identity. Nothing
         unstamped shares a `ChatSession` with anything else today, so the
         fallback is reached by test doubles and by nothing in production.
+
+        `getattr` on both `tool_context` and `history` rather than the bare
+        attributes: a hand-built double that never set either (a fixture
+        built for `_tools_tokens` alone, before that method had a reason to
+        ask this) gets the same "no messages yet" answer as a real session
+        between construction and its first appended turn, instead of an
+        `AttributeError` for state it was never asked to carry.
         """
-        chat_id = getattr(self.tool_context, "chat_id", "")
-        return chat_id or self._conversation_tag(self.history)
+        chat_id = getattr(getattr(self, "tool_context", None), "chat_id", "")
+        return chat_id or self._conversation_tag(getattr(self, "history", []))
 
     def _watch_head(self, head: str, *, wanted: str | None = None) -> str:
         """Count what the freeze REFUSED, and send the frozen bytes anyway.
@@ -2530,7 +2559,78 @@ class ChatSession:
         # sends a larger array from the next boundary on, and a figure kept
         # past the thing it measured is the defect this whole phase is about.
         self._tools_tokens_cached = None
+        # And which names count as `core`, held the same way and for the same
+        # reason as the head above: the next turn re-reads the live working
+        # set, which is exactly what a boundary is for. Logged once, here,
+        # because this is the one place that both still has the outgoing
+        # snapshot and knows a boundary is what is clearing it — the other
+        # log, in `_core_tools_for_turn`, fires while the change is still
+        # only pending.
+        if self.registry is not None and self._held_core_tools is not None:
+            live = frozenset(
+                t.name for t in self.registry.tools.values()
+                if getattr(t, "tier", "extended") == "core"
+            )
+            if live != self._held_core_tools:
+                logger.info(
+                    "working set applied at the boundary: this conversation "
+                    "carried %d core tools, the next one carries %d",
+                    len(self._held_core_tools), len(live),
+                )
+        self._held_core_tools = None
+        self._held_core_tools_for = None
+        self._held_core_tools_notice = False
         context_signal.forget(self._failures_scope_id)
+
+    def _core_tools_for_turn(self) -> frozenset[str] | None:
+        """The working set's `core` names to build this turn's tools array
+        from: held where nobody asked, re-read where a boundary did.
+
+        Mirrors `_head_for_turn` exactly, for the reason spelled out on
+        `_held_core_tools`: `Tool.tier` is instance state shared across every
+        running conversation, so reading it live inside the tool loop would
+        let a proposal applied mid-conversation (approved by the operator, or
+        by whatever the working-set review job's own approval path decides)
+        change a request's tools array the same turn it lands, re-reading the
+        whole prompt uncached for a change nobody in this conversation asked
+        for. Held until `refresh_head` clears it, which only a `reset()`, a
+        continuity boundary, or a fresh conversation on this object call.
+
+        `None` back means "no registry to size a set from" (a sub-agent, or a
+        test double whose `registry` answers `schemas_for_adapter` on its own
+        terms without a real `.tools` mapping behind it), which
+        `schemas_for_adapter` already treats as "read the live tier", the
+        same answer it would give a caller with nothing held.
+
+        Logs once per conversation, not once per turn, the moment a held set
+        stops matching the live one: the point is that a change is WAITING,
+        not a running count of how many turns it has waited.
+        """
+        if self.registry is None:
+            return None
+        try:
+            tools = list(self.registry.tools.values())
+        except AttributeError:
+            return None
+        here = self._conversation_id()
+        live = frozenset(
+            t.name for t in tools
+            if getattr(t, "tier", "extended") == "core"
+        )
+        if self._held_core_tools is None or self._held_core_tools_for != here:
+            self._held_core_tools = live
+            self._held_core_tools_for = here
+            self._held_core_tools_notice = False
+            return self._held_core_tools
+        if live != self._held_core_tools and not self._held_core_tools_notice:
+            self._held_core_tools_notice = True
+            logger.info(
+                "working set changed mid-conversation: holding the %d-tool "
+                "set this conversation started with until the next boundary "
+                "(the live working set now names %d)",
+                len(self._held_core_tools), len(live),
+            )
+        return self._held_core_tools
 
     def _current_system_prompt(self) -> str:
         if self.prompt_builder is None:
@@ -2900,6 +3000,7 @@ class ChatSession:
         # have a single opinion it does not have.
         schemas = self.registry.schemas_for_adapter(
             enabled_extended=self._enabled_extended_tools,
+            core_names=self._core_tools_for_turn(),
         )
         self._watch_tool_payload(schemas)
         return schemas
@@ -4686,6 +4787,16 @@ class ChatSession:
         serialise a hundred and fifty schemas to answer a question whose answer
         did not change. `refresh_head` drops it, so a boundary reads it again.
 
+        Sized against `_core_tools_for_turn()`'s held snapshot, not a live
+        registry read: `_tools_tokens_cached` and `_held_core_tools` are two
+        independent caches, both cleared by `refresh_head`, but nothing
+        forced their first calls in a conversation to land on the same side
+        of an ambient working-set change landing between them. Reading the
+        registry live here priced a different array than `_tool_schemas()`
+        was about to send — a demotion this call missed and that one caught
+        undercounts the tools charge, which undercounts the whole request,
+        which folds a full conversation late.
+
         Zero for a session with no registry, which is a sub-agent or a test
         double: nothing is sent, so nothing is charged.
 
@@ -4704,11 +4815,22 @@ class ChatSession:
             # path reads the same seam for the same reason.
             answered = getattr(self.adapter, "last_used_options", None) or self.options
             size = measure_tools(
-                wire_entries_for(self.registry, set(self._enabled_extended_tools)),
+                wire_entries_for(
+                    self.registry,
+                    set(self._enabled_extended_tools),
+                    core_names=self._core_tools_for_turn(),
+                ),
                 schema_chars_per_token=answered.schema_chars_per_token,
             ).tokens
         except Exception:
-            log.warning("could not size the tools array for the boundary", exc_info=True)
+            # Pre-existing typo (`log` was never a name bound in this module)
+            # fixed in the same pass that made this except clause reachable:
+            # `_core_tools_for_turn()` is now the first thing in the try that
+            # can raise on a hand-built session double, and a warning path
+            # that itself crashes turns a soft-fail into a hard one.
+            logger.warning(
+                "could not size the tools array for the boundary", exc_info=True
+            )
         self._tools_tokens_cached = size
         return size
 
@@ -4858,7 +4980,7 @@ class ChatSession:
             "context_window": ctx,
             "system_tokens": system_tokens,
             "boundary_trigger_tokens": int(
-                self._boundary_trigger_tokens(ctx, system_tokens)
+                self._boundary_trigger_tokens(ctx, system_tokens, self._tools_tokens())
             ),
             # The guard, reported alongside the boundary rather than only
             # logged. It trims an assembled prompt back under a char ceiling,

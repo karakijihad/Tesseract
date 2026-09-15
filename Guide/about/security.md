@@ -832,11 +832,13 @@ assistant give itself work, which is what that mode is for. Nothing else
 creates a task, no size or heuristic promotes a turn into one, and a task is
 never handed to a background worker, so the work you accepted is done where
 you asked for it and not twice. Closing one asks you again, with the evidence,
-and where nobody is asked the project's own checks decide: a task on a project
-that declares a test, a typecheck, a lint or a published URL reaches `done`
-only when those pass, run through the same permission path as any other
-command, and a failing step closes it `failed` whatever the assistant's
-sentence said. The record says who wrote the evidence, `gate` or `model`, so
+and where nobody is asked a check decides: when what would count as done names
+a check its project declares (a test, a typecheck, a lint or a published URL),
+that check runs through the same permission path as any other command, the
+task reaches `done` only when it passes, and a failing step closes it `failed`
+whatever the assistant's sentence said. Checks the task does not name do not
+run, and a task naming none closes on the assistant's evidence. A step nobody
+is watching cannot do that: it has to name a check its project declares. The record says who wrote the evidence, `gate` or `model`, so
 a task closed on a sentence is never mistaken for one closed on a check.
 
 **And the two things that learn from those records refuse the sentence.** A

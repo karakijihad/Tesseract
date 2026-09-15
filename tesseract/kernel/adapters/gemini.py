@@ -243,13 +243,24 @@ class GeminiAdapter(ModelAdapter):
         if usage_meta is not None:
             prompt = getattr(usage_meta, "prompt_token_count", 0) or 0
             candidates = getattr(usage_meta, "candidates_token_count", 0) or 0
+            # `cached_content_token_count` is a plain proto3 int field in the
+            # same usage message as `prompt_token_count` and
+            # `candidates_token_count` above, and the SDK types all three
+            # identically (`Optional[int] = None`). Proto3's JSON mapping
+            # omits a scalar field at its default value, so a call that
+            # cached nothing serializes with the key absent, which the SDK
+            # then surfaces as `None` — a reported zero, not a missing
+            # measurement. That is a different fact from OpenAI/Anthropic,
+            # where the field is genuinely absent for a model or API version
+            # with no caching support at all. Gemini's schema defines this
+            # field for every call, so `None` here always means 0, exactly
+            # as it already does for `prompt`/`candidates` above.
             cached = getattr(usage_meta, "cached_content_token_count", 0) or 0
             usage_raw = {
                 "input_tokens": int(prompt),
                 "output_tokens": int(candidates),
+                "cached_tokens": int(cached),
             }
-            if cached:
-                usage_raw["cached_tokens"] = int(cached)
 
         yield StreamChunk(
             type=ChunkType.STOP,

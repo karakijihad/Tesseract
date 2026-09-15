@@ -1,11 +1,14 @@
 import { useConversationStore } from "../../../stores/conversation";
+import { useIdentityStore } from "../../../stores/identity";
 import { useSessionStore } from "../../../stores/session";
 import { boundaryCeiling, conversationTokens, type SessionStatsData } from "../../../lib/types";
 import { colorBand } from "../../../lib/money";
 import { sendCommand } from "../../../lib/commands";
+import type { CompactionFacts } from "../../../lib/compaction";
 import { Hint } from "../../ui/Hint";
 import { Chip } from "../../common/Chip";
 import { DataTable } from "../../common/DataTable";
+import { WindowBar } from "../../common/WindowBar";
 
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
@@ -95,7 +98,12 @@ function measuredRequestRows(stats: SessionStatsData, total: number | undefined)
  * request: rows then add up top to bottom, payload plus conversation plus
  * the late block equals the total.
  */
-function payloadHint(stats: SessionStatsData, conversation: number) {
+function payloadHint(
+  stats: SessionStatsData,
+  conversation: number,
+  windowFacts: CompactionFacts,
+  windowRatio: number,
+) {
   const { total, lateBlock } = payloadParts(stats);
   const rows = [
     {
@@ -121,6 +129,7 @@ function payloadHint(stats: SessionStatsData, conversation: number) {
   ];
   return (
     <>
+      <WindowBar facts={windowFacts} ratio={windowRatio} />
       <p className="hud-stats-hint-lead">
         These are the parts of what every request sends: payload is the
         instructions, memory and tool list that go out before the
@@ -151,6 +160,11 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
   const latest = useSessionStore((s) => s.latestStats);
   const latestChatId = useSessionStore((s) => s.latestStatsChatId);
   const activeChatId = useConversationStore((s) => s.activeChatId);
+  // The bounds `chat.py`'s route enforces and where a fresh install sits:
+  // config-level, not per-turn, so they come from the identity store the same
+  // way Settings → Chat → Consolidation reads them, never from the stats
+  // envelope below.
+  const chatThreshold = useIdentityStore((s) => s.compactThresholds?.chat_brain ?? null);
   // Stats are per conversation. Every focus change asks the backend for the
   // new chat's numbers, but until they land these belong to the chat that was
   // left, and drawing them here labelled them as this one's.
@@ -200,6 +214,21 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
   const measuredSummary = measuredRows.length
     ? " " + measuredRows.map((row) => `${row.cells[0]} ${row.cells[1]}`).join(", ") + "."
     : "";
+  // Live: everything the runtime measured this turn, not a copy of the
+  // config it was set from. `boundaryCeiling`/`conversationTokens` are the
+  // same readers the fill bar above already uses, so the two cannot disagree
+  // on what "full" means.
+  const windowFacts: CompactionFacts = {
+    window: stats.context_window ?? chatThreshold?.context_window ?? 0,
+    defaultRatio: chatThreshold?.shipped_ratio ?? null,
+    systemTokens: stats.system_tokens ?? null,
+    toolsTokens: stats.tools_tokens ?? null,
+    conversationTokens: measured,
+    measuredCeilingTokens: threshold || null,
+    ratioFloor: chatThreshold?.ratio_min ?? null,
+    ratioCeiling: chatThreshold?.ratio_max ?? null,
+  };
+  const windowRatio = stats.compact_threshold_ratio ?? chatThreshold?.ratio ?? 0;
   const ariaSummary =
     `Turns ${stats.turns} · ${formatTokens(measured)} of ${formatTokens(threshold)}. ` +
     `Payload is instructions, memory and the tool list sent before the ` +
@@ -210,7 +239,11 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
     measuredSummary;
 
   return (
-    <Hint label={payloadHint(stats, measured)} position={hintPosition} maxWidth={320}>
+    <Hint
+      label={payloadHint(stats, measured, windowFacts, windowRatio)}
+      position={hintPosition}
+      maxWidth={320}
+    >
       <Chip
         className={`hud-stats hud-stats--${band}`}
         tone={band === "ok" ? "default" : band}

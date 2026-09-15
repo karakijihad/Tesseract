@@ -70,6 +70,16 @@ morning:
 # since it closed, so the work nobody came back to is counted rather than lost.
 verdict:
   silence_hours: 72
+  # How often the outcome watcher checks for a task that closed or a key that
+  # was pressed, from any process.
+  watch_seconds: 2
+  # A close is announced only if it happened this recently. Keeps a much
+  # older close, written by the retention sweep long after the fact, from
+  # being announced as if it just happened.
+  watch_backfill_minutes: 10
+  # The longest the watcher waits between checks once it starts backing off
+  # after repeated failures.
+  watch_max_seconds: 60
 
 # agent controller daemon reload behavior.
 controller:

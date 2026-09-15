@@ -1093,6 +1093,15 @@ def build_substrate_registry(app: web.Application):
         ),
     )
     reg.add(
+        "outcome_watch", lambda: _start_outcome_watch(app),
+        holds_gil=False,
+        degrade=(
+            "no task_closed phone message and no live Day room refresh for a "
+            "close or a key, from any process, until the next restart starts "
+            "it; every close and key is still written to disk"
+        ),
+    )
+    reg.add(
         "config_watcher", lambda: _start_config_watcher(app),
         holds_gil=False,
         degrade=(
@@ -1532,6 +1541,12 @@ async def _on_shutdown(app: web.Application) -> None:
         set_worker_broadcast_hook(None)
     except Exception:
         log.exception("set_worker_broadcast_hook(None) on shutdown failed")
+    outcome_watcher = app.get("outcome_watcher")
+    if outcome_watcher is not None:
+        try:
+            await outcome_watcher.stop()
+        except Exception:
+            log.exception("outcome_watcher.stop on shutdown failed")
     scheduler = app.get("scheduler")
     if scheduler is not None:
         try:
@@ -2597,10 +2612,7 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         )
         await kernel.start()
         app["autonomy_kernel"] = kernel
-        from tesseract.orchestrator.autonomy.broadcast import (
-            agenda_broadcast_hook,
-            broadcast_verdict_event,
-        )
+        from tesseract.orchestrator.autonomy.broadcast import agenda_broadcast_hook
         from tesseract.orchestrator.autonomy.publishers import set_active_bus
         set_active_bus(kernel.bus)
 
@@ -2613,38 +2625,10 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         # onto its own AgendaStore for task_propose/task_work/task_close.
         kernel._agenda.set_broadcast_hook(agenda_broadcast_hook(app))
 
-        # A key (good/bad/not used) reaches the cockpit live from wherever it
-        # was pressed: a cockpit button, a Telegram tap and a Telegram typed
-        # reply all call `verdicts.record_verdict`, the one write every
-        # surface shares, so wiring the broadcast at that one choke point
-        # covers all three without teaching any surface about WS.
-        #
-        # Registered here, inside the running loop, because `record_verdict`
-        # runs off it (`asyncio.to_thread` from the REST route and from the
-        # Telegram bridge) and has no loop of its own to ask when it fires;
-        # the loop is captured now and the broadcast is handed back to it
-        # with `call_soon_threadsafe`. A closed loop at shutdown drops the
-        # broadcast silently, same as every other broadcast hook here.
-        from tesseract.orchestrator.autonomy import verdicts
-
-        _verdict_loop = asyncio.get_running_loop()
-
-        def _on_verdict_recorded(task_id: str, verdict: str, by: str) -> None:
-            def _fire() -> None:
-                try:
-                    _verdict_loop.create_task(
-                        broadcast_verdict_event(app, task_id, verdict, by),
-                        name=f"verdict_broadcast:{task_id}",
-                    )
-                except RuntimeError:
-                    return  # loop stopping/closed — drop silently
-
-            try:
-                _verdict_loop.call_soon_threadsafe(_fire)
-            except RuntimeError:
-                return  # loop already closed
-
-        verdicts.set_recorded_listener(_on_verdict_recorded)
+        # A task closing and a key being pressed both reach the cockpit live
+        # through `outcome_watch.OutcomeWatcher`, started as its own substrate
+        # below the line, not from here: it tails the files every surface
+        # already writes to, so it works whichever process wrote them.
 
         # Fan worker_record_* envelopes from every write_record /
         # archive_record callsite (kernel, governor, cancel, recovery,
@@ -2825,6 +2809,19 @@ def _make_governor_notify(app: web.Application):
             log.exception("governor: telegram nudge failed (best-effort)")
 
     return notify
+
+
+async def _start_outcome_watch(app: web.Application) -> None:
+    """The one Mirror-side watcher for a task closing and a key being
+    pressed. A failure to start raises: the boot graph records this
+    substrate as failed with its `degrade` text and the rest of Mirror still
+    boots, which a swallowed exception here would hide.
+    """
+    from tesseract.orchestrator.autonomy.outcome_watch import OutcomeWatcher
+
+    watcher = OutcomeWatcher(app)
+    await watcher.start()
+    app["outcome_watcher"] = watcher
 
 
 async def _start_config_watcher(app: web.Application) -> None:

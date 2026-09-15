@@ -219,6 +219,7 @@ class ToolRegistry:
     def schemas_for_adapter(
         self,
         enabled_extended: set[str] | None = None,
+        core_names: frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Every tool, each one saying whether it is LOADED or DEFERRED.
 
@@ -247,6 +248,19 @@ class ToolRegistry:
         picture with no working set at all — the capability-matrix generator
         and the introspection tests. That path is unflagged and unchanged.
 
+        `core_names` is the working set to classify against. `None` (the
+        default) reads `tier == "core"` live off the registry, which is right
+        for a caller with no conversation to protect — a panel, a size
+        estimate, a test. `ChatSession` passes its own held snapshot instead
+        (`_core_tools_for_turn`), because `tier` is mutated in place on these
+        same `Tool` instances the moment a working-set change is applied
+        (`boot._apply_tool_tiers`), and a live read here would smuggle that
+        ambient change into a conversation already running, mid-conversation,
+        the same defect `_head_for_turn` exists to prevent for the prompt
+        head. A tool the model unlocked itself (`enabled_extended`) is never
+        held back by this: that growth is the model's own act, not an
+        ambient one, and it is unioned in after the freeze either way.
+
         When a set is passed, even an empty one, every tool is returned and
         each is marked:
 
@@ -274,10 +288,16 @@ class ToolRegistry:
             return [t.to_schema() for t in every]
 
         # The working set, in registry order, then anything `tool_search`
-        # unlocked this session.
-        loaded = {
-            t.name for t in every if getattr(t, "tier", "extended") == "core"
-        } | set(enabled_extended)
+        # unlocked this session. `core_names`, when given, replaces the live
+        # tier read below it entirely rather than merging with it — a name a
+        # proposal just dropped from `core` must actually leave the array a
+        # held snapshot describes, not linger because some other tool's live
+        # tier still says "core".
+        if core_names is None:
+            core_names = frozenset(
+                t.name for t in every if getattr(t, "tier", "extended") == "core"
+            )
+        loaded = set(core_names) | set(enabled_extended)
 
         # A working set that resolves to nothing is a broken
         # `working_set.yaml::core`, and it is silent everywhere else: the

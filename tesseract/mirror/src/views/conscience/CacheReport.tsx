@@ -1,4 +1,5 @@
 import type { CacheResponse, CacheTurn } from '../../stores/conscience';
+import { CacheScatter } from './CacheScatter';
 
 /** What the prompt cache did, per turn.
  *
@@ -56,6 +57,8 @@ export function CacheReport({ reading }: { reading: CacheResponse }) {
           </p>
         )}
       </header>
+
+      <CacheScatter calls={reading.calls ?? []} />
 
       {latest && latest.length > 0 && (
         <>

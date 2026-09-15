@@ -295,7 +295,13 @@ def clone_for_reflection(session: ChatSession) -> ChatSession:
        Copied by VALUE (`.update`), never by reference — a shared set would
        let a `tool_search` call inside the reflection silently unlock a tool
        on the live conversation too, the exact class of bug the tool_context
-       copy below already exists to prevent.
+       copy below already exists to prevent. `_held_core_tools` /
+       `_held_core_tools_for` ride along the same way as `_held_head` below,
+       and for the same reason: a working-set proposal can land, and be
+       applied, while the reflection is in flight, and the clone's tools
+       array has to match the request the live conversation actually sent,
+       not the working set that happens to be configured when the background
+       task gets scheduled.
     4. **No shared mutable state past construction.** `copy.copy`, NOT the
        live object (agent_factory.py idiom): `ChatSession.__post_init__`
        assigns `tool_context.spawns` and `tool_context.enabled_extended_tools`
@@ -311,6 +317,7 @@ def clone_for_reflection(session: ChatSession) -> ChatSession:
        than silently reverting to the old cache-miss shape.
     """
     held_head, held_for = session._held_head, session._held_for
+    held_core, held_core_for = session._held_core_tools, session._held_core_tools_for
     clone = ChatSession(
         adapter=session.adapter,
         system_prompt=session.system_prompt,
@@ -346,6 +353,15 @@ def clone_for_reflection(session: ChatSession) -> ChatSession:
             "reflection reads one fresh, as it did before this fix",
             getattr(session.tool_context, "chat_id", "") or "unknown",
         )
+    # Same reasoning, same shape, for which names count as `core`: a fresh
+    # `ChatSession()` call above leaves `_held_core_tools` at its dataclass
+    # default (`None`), which would have the clone's first `_tool_schemas()`
+    # call take its own snapshot off whatever the live registry says AT
+    # REFLECTION TIME rather than what the live conversation's last real
+    # request actually carried. `frozenset` is immutable, safe to alias.
+    if held_core is not None:
+        clone._held_core_tools = held_core
+        clone._held_core_tools_for = held_core_for
     # By value, never by reference — see invariant 3 above.
     clone._enabled_extended_tools.update(session._enabled_extended_tools)
     return clone

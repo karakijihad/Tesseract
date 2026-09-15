@@ -838,14 +838,9 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
         return;
       }
       case 'agenda_item_transitioned': {
+        // The agenda list only. A task finishing reaches the Day room through
+        // `task_closed` below, the one envelope for a close from any process.
         void get().fetchAgenda();
-        // Only a task reaching done or failed changes "Finished today", so
-        // the Day room is read again for that and not for every tick of
-        // autonomy's own items.
-        const moved = env.data as { source?: unknown; status?: unknown };
-        if (moved?.source === 'task' && (moved.status === 'done' || moved.status === 'failed')) {
-          void get().fetchDay();
-        }
         return;
       }
       case 'task_verdict_recorded': {
@@ -853,6 +848,14 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
         // cockpit button, Telegram tap, Telegram typed reply. Refetch the
         // day so it shows live with no reload, same as the recording
         // surface's own optimistic refetch after its own POST.
+        void get().fetchDay();
+        return;
+      }
+      case 'task_closed': {
+        // A task finished, from whichever process closed it: the Mirror's
+        // own chat, Telegram, or an agent controller session with no `app`
+        // at all. `outcome_watch` is what turns any of them into this one
+        // envelope, so the Day room shows it live with no reload.
         void get().fetchDay();
         return;
       }

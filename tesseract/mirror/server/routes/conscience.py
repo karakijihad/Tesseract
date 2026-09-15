@@ -618,6 +618,11 @@ async def cache(request: web.Request) -> web.Response:
     made cost anything. That is the reading every phase from here needs, and
     it is the one that was missing when it was first asked for.
 
+    A third list, `calls`, carries every call in the window rather than every
+    turn: a cold start and a single missed prefix are calls, not turns, and a
+    turn-level reading averages them away. Capped and oldest first; see
+    `cache_report.CALL_CAP`.
+
     The window is calendar days on the operator's clock, inclusive of today,
     the way `tool-usage` counts them.
 
@@ -642,7 +647,7 @@ async def cache(request: web.Request) -> web.Response:
             # that has never made a call.
             return {
                 "days": days, "summary": None,
-                "latest": [], "turns": [], "ledger": False,
+                "latest": [], "turns": [], "calls": [], "ledger": False,
             }
         rows = cache_report.parse(path.read_text(encoding="utf-8").splitlines())
         windowed = cache_report.within(rows, days, today=date.today())
@@ -655,6 +660,9 @@ async def cache(request: web.Request) -> web.Response:
             "summary": cache_report.summarise(turns),
             "latest": [cache_report.as_row(t) for t in turns[:LATEST_TURNS]],
             "turns": [cache_report.as_row(t) for t in worst[:WORST_TURNS]],
+            # Every call in the window, capped and oldest first, for the
+            # chart plotting hit rate over time rather than by turn.
+            "calls": cache_report.calls_over_time(windowed),
             "ledger": True,
         }
 

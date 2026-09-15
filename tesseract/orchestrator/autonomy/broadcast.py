@@ -36,6 +36,8 @@ VALID_GOVERNOR_EVENT_TYPES = frozenset(
 
 VALID_VERDICT_EVENT_TYPES = frozenset({"task_verdict_recorded"})
 
+VALID_CLOSE_EVENT_TYPES = frozenset({"task_closed"})
+
 
 def _load_mirror_helpers() -> tuple[Any, Any] | None:
     global _MIRROR_HELPERS, _MIRROR_HELPERS_FAILED
@@ -216,17 +218,60 @@ async def broadcast_governor_event(
             )
 
 
+async def broadcast_close_event(
+    app: Any, item_id: str, outcome: str, verified_by: str,
+) -> None:
+    """Fan a task's close out to every Mirror WS session, so the Day room
+    refreshes without a reload.
+
+    Fired exactly once, from `outcome_watch`'s poll loop, never from
+    `task_close.py` or a route handler directly: a close written by the
+    Mirror's own chat, by Telegram, or by an agent controller session with no
+    `app` at all all land as the same row in `agenda/history/`, and the
+    watcher is what turns any of them into this one broadcast. Never raises;
+    `app` may be None.
+    """
+    event_type = "task_closed"
+    if event_type not in VALID_CLOSE_EVENT_TYPES:  # pragma: no cover - fixed literal
+        log.warning("close broadcast: unknown event_type %r", event_type)
+        return
+    if app is None or not hasattr(app, "get"):
+        return
+    sessions = app.get("server_sessions") or {}
+    if not sessions:
+        return
+    helpers = _load_mirror_helpers()
+    if helpers is None:
+        return
+    make_envelope, send_envelope = helpers
+    payload = {"item_id": item_id, "outcome": outcome, "verified_by": verified_by}
+    for sess in list(sessions.values()):
+        env = make_envelope(
+            event_type,
+            "agenda",
+            getattr(sess, "session_id", ""),
+            payload,
+        )
+        try:
+            await send_envelope(sess, env)
+        except Exception:
+            log.exception(
+                "close broadcast: send_envelope failed for %s",
+                getattr(sess, "session_id", "?"),
+            )
+
+
 async def broadcast_verdict_event(
     app: Any, task_id: str, verdict: str, by: str,
 ) -> None:
     """Fan the operator's one-key verdict out to every Mirror WS session.
 
-    Fired exactly once, from `verdicts.record_verdict`'s recorded-listener,
-    never from a route or bridge handler directly: a cockpit button, a
-    Telegram tap and a Telegram typed reply all call `record_verdict`, so
-    wiring the broadcast there is what makes every surface show the key
-    live without teaching any of them about WS. Never raises; `app` may
-    be None.
+    Fired only by `outcome_watch`'s `_announce_key`, once per key row it reads
+    from `agenda/verdicts/`, never from a route or bridge handler directly: a
+    cockpit button, a Telegram tap and a Telegram typed reply all write that
+    file through `record_verdict`, so reading it is what makes every surface,
+    in any process, show the key live without teaching any of them about WS.
+    Never raises; `app` may be None.
     """
     event_type = "task_verdict_recorded"
     if event_type not in VALID_VERDICT_EVENT_TYPES:  # pragma: no cover - fixed literal

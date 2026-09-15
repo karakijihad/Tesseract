@@ -60,7 +60,7 @@ const POLICY_OPTIONS: PolicyOption[] = [
  *
  *  One section rather than three, because the operator's question is "what
  *  happens to my conversation" — and the answer used to be split between a
- *  panel called Compaction and a sibling called Session policy.
+ *  panel called Consolidation and a sibling called Session policy.
  */
 type Pane = "autosave" | "compaction" | "loop-limits";
 
@@ -70,7 +70,7 @@ type Pane = "autosave" | "compaction" | "loop-limits";
  *  in it. */
 const PANES: readonly TabItem<Pane>[] = [
   { key: "autosave", label: "Autosave" },
-  { key: "compaction", label: "Compaction" },
+  { key: "compaction", label: "Consolidation" },
   { key: "loop-limits", label: "Loop limits" },
 ];
 
@@ -298,7 +298,7 @@ function CompactionBlock() {
   };
 
   return (
-    // The tab strip above already says Compaction, so the block said it again
+    // The tab strip above already says Consolidation, so the block said it again
     // six pixels below while the sentence explaining it stayed hidden behind
     // an ⓘ. The sentence is the half worth showing.
     <Block title={null}>

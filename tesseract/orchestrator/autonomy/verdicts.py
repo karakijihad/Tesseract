@@ -23,7 +23,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from tesseract.orchestrator.autonomy.agenda_history import closed_since
 from tesseract.orchestrator.autonomy.paths import agenda_root
@@ -31,29 +31,6 @@ from tesseract.orchestrator.autonomy.paths import agenda_root
 log = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
-
-#: Told once, after a key is actually written. Never on "invalid",
-#: "unknown_task", "not_a_task", "never_finished" or "unwritable": nothing
-#: happened on any of those, so nothing to announce. Mirror server boot
-#: is the one caller; a listener exception is logged and swallowed here so
-#: the key is saved either way.
-RecordedListener = Callable[[str, str, str], None]
-_recorded_listener: RecordedListener | None = None
-
-
-def set_recorded_listener(fn: RecordedListener | None) -> None:
-    """Wire (or clear) the sync callback fired after a successful write.
-
-    Called with `(task_id, verdict, by)`. `record_verdict` may run on a
-    worker thread (`asyncio.to_thread`), so the listener itself must be
-    thread-safe; Mirror server boot's listener captures the running loop at
-    registration time and schedules its broadcast with
-    `loop.call_soon_threadsafe` for exactly that reason. Tests must reset
-    this to `None` in teardown.
-    """
-    global _recorded_listener
-    _recorded_listener = fn
-
 
 OperatorVerdict = Literal["good", "bad", "unused"]
 
@@ -120,14 +97,6 @@ def record_verdict(
     except OSError:
         log.exception("verdicts: could not record %s for %s", verdict, task_id)
         return "unwritable"
-    if _recorded_listener is not None:
-        try:
-            _recorded_listener(task_id, verdict, by)
-        except Exception:
-            log.exception(
-                "verdicts: recorded-listener raised for %s on %s; the key is saved either way",
-                verdict, task_id,
-            )
     return "recorded"
 
 
@@ -161,11 +130,9 @@ __all__ = [
     "JUDGED_STATUSES",
     "OperatorVerdict",
     "Recorded",
-    "RecordedListener",
     "VALID_VERDICTS",
     "latest",
     "record_verdict",
-    "set_recorded_listener",
     "silence_hours",
     "verdicts_dir",
 ]

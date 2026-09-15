@@ -196,6 +196,50 @@ def summarise(turns: list[TurnCache]) -> dict[str, Any]:
     }
 
 
+#: How many calls the panel draws as points, newest kept. A scatter earns
+#: nothing past a few hundred marks a screen cannot even separate, and a busy
+#: week can hold thousands of calls where `by_turn` would still show a
+#: readable dozen rows. Capping by count rather than by the window keeps the
+#: picture legible however far back the window reaches; keeping the newest
+#: rather than the oldest matches `latest` for the same reason.
+CALL_CAP = 500
+
+
+def as_call(row: CallRow) -> dict[str, Any]:
+    """One model call, for the panel that plots cache hit rate over time.
+
+    `hit_rate` is `None` on the same terms as `TurnCache.hit_rate`: a call the
+    provider said nothing about is not a call it reported as a miss, and
+    drawing it at 0% would be the exact confusion this instrument exists to
+    avoid.
+    """
+    return {
+        "ts": row.ts.isoformat(),
+        "input_tokens": row.input_tokens,
+        "cached_tokens": row.cached_tokens,
+        "hit_rate": (
+            row.cached_tokens / row.input_tokens
+            if row.reported and row.input_tokens > 0
+            else None
+        ),
+        "cost_usd": round(row.cost_usd, 6),
+        "turn_id": row.turn_id,
+        "model": row.model,
+        "role": row.role,
+    }
+
+
+def calls_over_time(rows: Iterable[CallRow]) -> list[dict[str, Any]]:
+    """Every call in the window, oldest first, capped to the newest `CALL_CAP`.
+
+    The caller passes an already-windowed `rows`; this only orders and caps
+    it. Oldest first so a chart reading left to right needs no further sort.
+    """
+    ordered = sorted(rows, key=lambda r: r.ts)
+    capped = ordered[-CALL_CAP:] if len(ordered) > CALL_CAP else ordered
+    return [as_call(r) for r in capped]
+
+
 def as_row(turn: TurnCache) -> dict[str, Any]:
     return {
         "turn_id": turn.turn_id,
@@ -215,10 +259,13 @@ def as_row(turn: TurnCache) -> dict[str, Any]:
 
 
 __all__ = [
+    "CALL_CAP",
     "CallRow",
     "TurnCache",
+    "as_call",
     "as_row",
     "by_turn",
+    "calls_over_time",
     "parse",
     "summarise",
     "within",

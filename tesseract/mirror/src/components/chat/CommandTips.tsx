@@ -16,7 +16,7 @@ const TIPS: Tip[] = [
   { cmd: '/save',     description: 'save current session (add a name to fork)' },
   { cmd: '/reset',    description: 'clear chat (asks: reflect first?)', opensResetDialog: true },
   { cmd: '/compact',  description: 'summarize + trim history' },
-  { cmd: '/stats',    description: 'show tokens · turns · compact threshold' },
+  { cmd: '/stats',    description: 'show tokens · turns · consolidation threshold' },
 ];
 
 export function CommandTips() {

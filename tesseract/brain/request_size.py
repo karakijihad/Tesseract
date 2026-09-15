@@ -231,13 +231,29 @@ def measure(
     )
 
 
-def wire_entries_for(registry: Any, enabled_extended: set[str] | None) -> list[dict]:
+def wire_entries_for(
+    registry: Any,
+    enabled_extended: set[str] | None,
+    core_names: frozenset[str] | None = None,
+) -> list[dict]:
     """The tools array a turn would send, from a registry.
 
     The deferring projection, because that is what the chat brain runs on and
     what every measured figure in this module was taken against. A caller
     holding a live adapter should project through it instead; this is for the
     readouts that have a registry and no request in flight.
+
+    `core_names` forwards straight to `schemas_for_adapter`, and only when
+    given: `None` (the default) omits the keyword entirely rather than
+    passing it as `None`, so a `registry` double written before this
+    parameter existed (a bare `enabled_extended`-only signature) keeps
+    working exactly as it did. `None` also reads the registry's live `tier`,
+    which is right for a caller with no conversation to protect — a panel, a
+    capability readout. A caller sizing a running conversation's actual
+    request passes its held snapshot (`ChatSession._core_tools_for_turn`), or
+    this measures an array the turn is not the one that will be sent — the
+    two diverge the moment an ambient working-set change lands between the
+    head freeze and the size read.
 
     Returns an empty list rather than raising: a panel that cannot size the
     tools array should say zero and keep its head figure, not fail.
@@ -247,9 +263,12 @@ def wire_entries_for(registry: Any, enabled_extended: set[str] | None) -> list[d
     try:
         from tesseract.kernel.adapters.openai import build_tools_array
 
-        classified = registry.schemas_for_adapter(
-            enabled_extended=enabled_extended if enabled_extended is not None else set()
-        )
+        kwargs: dict[str, Any] = {
+            "enabled_extended": enabled_extended if enabled_extended is not None else set(),
+        }
+        if core_names is not None:
+            kwargs["core_names"] = core_names
+        classified = registry.schemas_for_adapter(**kwargs)
         return build_tools_array(classified)
     except Exception:
         log.exception("request size: could not build the tools array to measure")

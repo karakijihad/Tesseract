@@ -41,6 +41,44 @@ def _resolve(path: Path) -> Path | None:
         return None
 
 
+def _is_link(path: Path) -> bool:
+    try:
+        return path.is_symlink() or path.is_junction()
+    except OSError:
+        return True
+
+
+def _inside_workshop(root: Path) -> bool:
+    """Whether `root` is the workshop folder or inside it, with no link between.
+
+    Decided on the path as written, not as resolved: `resolve()` follows a
+    symlink or a Windows junction, so a `workshop` relinked to the app's own
+    code would otherwise carry that code through the one exception there is.
+    Every folder from `root` up to and including `workshop` must be a real
+    folder, not a link; a folder that does not exist yet (a project about to be
+    created) is not a link.
+    """
+    import os
+
+    # `abspath` collapses `..` on the text alone, so `workshop/<link>/..`
+    # would read as `workshop` without the link ever being looked at. A path
+    # written with `..` never takes this exception; the resolved checks
+    # decide it instead.
+    if ".." in Path(str(root)).parts:
+        return False
+    workshop = Path(os.path.abspath(paths.home_dir() / "workshop"))
+    written = Path(os.path.abspath(root))
+    if written != workshop and workshop not in written.parents:
+        return False
+    step = written
+    while True:
+        if _is_link(step):
+            return False
+        if step == workshop:
+            return True
+        step = step.parent
+
+
 def _overlaps(resolved: Path, tree: Path) -> bool:
     """True when `resolved` and `tree` are the same folder, or one sits
     inside the other, in either direction."""
@@ -62,8 +100,7 @@ def why_root_is_refused(root: Path | str) -> str:
             "Try a different folder or check that the path is correct."
         )
 
-    workshop = _resolve(paths.home_dir() / "workshop")
-    if workshop is not None and (resolved == workshop or workshop in resolved.parents):
+    if _inside_workshop(Path(root)):
         return ""
 
     own_root = _resolve(paths.ROOT)

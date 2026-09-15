@@ -95,7 +95,7 @@ BROADCASTS: dict[str, Broadcast] = {
             "task that closes and is never scored teaches it nothing, and "
             "this is how the question reaches you away from the desk."
         ),
-        producer="brain/boot.py::_notify_task_closed",
+        producer="orchestrator/autonomy/outcome_watch.py::_announce_close",
     ),
     "recovery_summary": Broadcast(
         summary="What was still open when the app restarted, and what it did about it.",
