@@ -185,16 +185,16 @@ def maybe_log_skill_load(path: str | Path, session_id: str, *, is_error: bool) -
 
 
 def _version_at(path: str | Path) -> str:
-    """The revision the body read carries, or "" when it is not a playbook
-    or cannot be parsed. Read off the file rather than a registry, because the
-    file is what the assistant just read."""
+    """The revision the body read carries, or "" when the skill never
+    declared one or the file cannot be parsed. Read off the file rather than
+    a registry, because the file is what the assistant just read."""
     from tesseract.brain.skills import load_skill_folder
 
     try:
         entry = load_skill_folder(Path(path).parent)
     except Exception:  # noqa: BLE001 — telemetry must never break the caller
         return ""
-    return entry.version if entry is not None and entry.is_playbook else ""
+    return entry.version if entry is not None else ""
 
 
 def attribute_session_corrections(session_id: str, *, memory_id: str = "") -> int:

@@ -62,20 +62,18 @@ SKIP_DIRNAMES = frozenset({SKILL_PENDING_DIRNAME, SKILL_REJECTED_DIRNAME, "__pyc
 #: one before. Closed: `playbook_contract` reports anything else.
 PLAYBOOK_STATUSES = ("draft", "active", "retired")
 
-#: Frontmatter keys that make a skill a PLAYBOOK. Declaring any one of them
-#: is declaring the whole contract, which `playbook_contract.gaps_for_skill`
-#: then checks. A skill declaring none is a plain skill and nothing here
-#: applies to it. `allowed-tools` is deliberately absent: it is the interop
-#: field a plain skill may carry too.
-PLAYBOOK_KEYS = frozenset({
+#: Everything a skill owes: the procedure contract (the shape of problem it
+#: answers, what must hold first, the steps and the tool each one uses, what
+#: done looks like, what goes wrong, its status and the turns it was learned
+#: from) plus the two Agent Skills interop keys. One kind, one contract: a
+#: file declaring none of these still loads (ruling 12) and
+#: `playbook_contract.gaps_for_skill` reports each missing key as a gap
+#: rather than refusing it.
+CONTRACT_KEYS = frozenset({
     "use_when", "not_when", "trigger", "preconditions", "steps",
     "forbidden-tools", "expected_result", "failure_modes", "evidence",
-    "status", "confidence",
+    "status", "confidence", "allowed-tools", "version",
 })
-
-#: Everything a playbook owes: the keys above plus the two interop keys a
-#: plain skill may also carry, which is why those two do not make one.
-CONTRACT_KEYS = PLAYBOOK_KEYS | {"allowed-tools", "version"}
 
 
 @dataclass(frozen=True)
@@ -103,14 +101,14 @@ class SkillEntry:
     license: str = ""
     allowed_tools: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
-    # The playbook half. A procedure that worked, written down on the contract
-    # a tool's `use_when`/`not_when` and a manifest entry's summary already
-    # use: what shape of problem it answers, what must hold first, the steps
-    # and the tool each one uses, what done looks like, what goes wrong, and
-    # the turns it was learned from. Parsed tolerantly here; whether the
+    # The procedure contract, written down on the same terms a tool's
+    # `use_when`/`not_when` and a manifest entry's summary already use: what
+    # shape of problem it answers, what must hold first, the steps and the
+    # tool each one uses, what done looks like, what goes wrong, and the
+    # turns it was learned from. Parsed tolerantly here; whether the
     # declaration is complete is `playbook_contract`'s question, asked at
-    # boot, so a half-written playbook is a reported gap and never a skill
-    # that silently fails to load.
+    # boot, so a half-written (or unwritten) contract is a reported gap and
+    # never a skill that silently fails to load.
     use_when: str = ""
     not_when: str = ""
     trigger: str = ""
@@ -123,13 +121,9 @@ class SkillEntry:
     status: str = ""
     confidence: float | None = None
     #: Which contract keys the frontmatter actually declared, so the contract
-    #: can tell a field left empty from one never written, and so a plain
-    #: skill is never held to a contract it did not sign.
+    #: can tell a field left empty from one never written, and so a skill is
+    #: never held to a value it did not write, only to declaring it.
     declared: frozenset[str] = frozenset()
-
-    @property
-    def is_playbook(self) -> bool:
-        return bool(self.declared & PLAYBOOK_KEYS)
 
 
 def _load_skill(folder: Path) -> SkillEntry | None:
@@ -313,14 +307,12 @@ def keep_predecessor(folder: Path, live: SkillEntry, proposed: SkillEntry) -> st
 
     A revision never overwrites its predecessor, because the whole point of a
     version is that a later one which measures worse can be compared against,
-    and returned to, a record that still exists. Returns an error string and
-    keeps nothing when the proposal is not a later revision, or when the
-    archive slot is already taken (which would be overwriting a predecessor
-    after all). A plain skill keeps nothing and is replaced as before: its
-    `version` is the interop field, free-form, and orders nothing.
+    and returned to, a record that still exists. Applies to every skill
+    (ruling 12 made this one kind): returns an error string and keeps nothing
+    when the proposal is not a later revision, when the live version cannot be
+    ordered as a whole number, or when the archive slot is already taken
+    (which would be overwriting a predecessor after all).
     """
-    if not live.is_playbook:
-        return None
     from tesseract.brain.playbook_contract import version_number
 
     before = version_number(live.version)
@@ -433,10 +425,10 @@ def replace_skill_body(
     The one path that changes a live skill, called by the refinement card's
     approve route and by `skill_refine` once its gate is answered. Refuses
     before touching anything when the proposal fails the loader round-trip or
-    names a different skill, and, for a playbook, when it would not pass the
-    door a new one goes through (`skill_create.refuse_playbook`: a tool the
-    runtime lacks, a credential-bearing path, a path outside the home tree).
-    A playbook's revision number is stamped by the runtime before any of that
+    names a different skill, or when it would not pass the door a new one
+    goes through (`skill_create.refuse_playbook`: a tool the runtime lacks, a
+    credential-bearing path, a path outside the home tree). Every skill's
+    revision number is stamped by the runtime before any of that
     (`stamp_playbook_version`), so `keep_predecessor` can only refuse over a
     live version that cannot be ordered or a slot already taken, never over
     arithmetic the author got wrong. If the replace itself fails after the
@@ -469,12 +461,11 @@ def replace_skill_body(
     # text written and the entry loaded from it agree, and so `refuse_playbook`
     # reads what will land. A live version that cannot be ordered is NOT
     # stamped over: that is a real broken state and `keep_predecessor` says so.
-    if live.is_playbook:
-        from tesseract.brain.playbook_contract import version_number
+    from tesseract.brain.playbook_contract import version_number
 
-        live_number = version_number(live.version)
-        if live_number is not None:
-            proposed_markdown = stamp_playbook_version(proposed_markdown, live_number + 1)
+    live_number = version_number(live.version)
+    if live_number is not None:
+        proposed_markdown = stamp_playbook_version(proposed_markdown, live_number + 1)
 
     tmp_root = Path(tempfile.mkdtemp())
     tmp_folder = tmp_root / name
@@ -486,12 +477,11 @@ def replace_skill_body(
             return "proposed SKILL.md failed loader validation (frontmatter/size)"
         if entry.name != name:
             return f"proposed frontmatter name {entry.name!r} must match {name!r}"
-        if entry.is_playbook:
-            from tesseract.kernel.tools.skill_create import refuse_playbook
+        from tesseract.kernel.tools.skill_create import refuse_playbook
 
-            refused = refuse_playbook(proposed_markdown, name, tool_names)
-            if refused:
-                return refused
+        refused = refuse_playbook(proposed_markdown, name, tool_names)
+        if refused:
+            return refused
         kept = keep_predecessor(skills_dir / name, live, entry)
         if kept is not None:
             return kept
@@ -520,7 +510,7 @@ def _take_back_archive(folder: Path, live: SkillEntry) -> str | None:
     revision for good. Returns a sentence naming the slot when it could not
     be removed, so the caller's error says what to delete by hand rather than
     leaving a refusal nobody can explain."""
-    if not live.is_playbook or not live.version:
+    if not live.version:
         return None
     slot = folder / SKILL_HISTORY_DIRNAME / live.version / SKILL_FILENAME
     try:

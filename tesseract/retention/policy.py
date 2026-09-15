@@ -625,6 +625,23 @@ def _registry() -> dict[str, Tree]:
             where=sweeps.receipts_roots,
         ),
         Tree(
+            key="tool_results",
+            title="Tool results too long to send",
+            summary=(
+                "The whole of each tool result that was too long to put in "
+                "front of the assistant in one piece."
+            ),
+            why=(
+                "The assistant was shown the opening lines and the path to the "
+                "rest, so a file here is the only full copy of that result. It "
+                "matters while the conversation that points at it is being "
+                "worked in, which is days, and every long result writes one."
+            ),
+            sweep=sweeps.tool_results,
+            where=sweeps.tool_results_roots,
+            actions=(Action.DELETE,),
+        ),
+        Tree(
             key="loop_stalls",
             title="How long the app was blocked",
             summary="One row per block of the event loop long enough to matter.",

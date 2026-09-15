@@ -229,6 +229,14 @@ trees:
     keep_days: 30
     action: delete
 
+  # The whole of every tool result that was too long to send in one piece. The
+  # assistant was shown the opening lines and where the rest is saved, so a file
+  # here is the only full copy. Kept for the life of the conversation that
+  # points at it, and deleted rather than archived: the tool can be run again.
+  tool_results:
+    keep_days: 14
+    action: delete
+
   # One row each time the event loop was blocked long enough to threaten the
   # supervisor's heartbeat, with the frames it was in. Written only when it
   # happens, so a healthy machine adds nothing for weeks and a bad afternoon

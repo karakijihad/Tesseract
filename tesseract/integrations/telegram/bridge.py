@@ -99,7 +99,7 @@ from tesseract.integrations.telegram.state import (
     save_status,
 )
 from tesseract.lib import last_seen
-from tesseract.mirror.server.after_turn import after_turn
+from tesseract.mirror.server.after_turn import after_turn, wrap_up_first
 from tesseract.mirror.server.reflect import start_reflection
 from tesseract.mirror.server.event_log import EventLog
 from tesseract.mirror.server import spawn_wake
@@ -164,19 +164,6 @@ _COULD_NOT_CARRY_ON = (
     "I cleared this conversation and could not pick the work back up. What it "
     "taught me is written down. Ask me where things stood and I will read it "
     "back."
-)
-
-#: What the conversation is asked when the operator wants the thread closed
-#: AND the state handed over. The same shape as the runtime's own ask at a
-#: hard boundary, said to the model and read by the operator over its
-#: shoulder, and the answer to it is an ordinary `session_continue` call so
-#: the boundary that follows is the ordinary one.
-_ASK_BEFORE_CLEARING = (
-    "The operator is closing this thread and wants where the work stood "
-    "carried into the next one. Wrap up now with `session_continue`: what "
-    "this was for, what got done, what is left and what to do first. Choose "
-    "`continue` if the work goes on and `reset` if it is finished. Keep "
-    "anything you say short. This thread is being cleared either way."
 )
 
 #: The same sentence for an approval answered after its turn had given up.
@@ -782,6 +769,19 @@ class TelegramBridge:
             )
             reply = await dispatch_command(text_stripped, ctx)
             if reply is not None:
+                if self._state.poll_state.pending_clear.get(str(message.chat_id)):
+                    # The one command whose reply is a QUESTION rather than an
+                    # answer, so it ships with the three answers attached. The
+                    # keyboard is the bridge's and not the handler's because a
+                    # keyboard is transport: the router is read-only by
+                    # design, and what a surface can physically carry is the
+                    # one thing a surface is allowed to differ in.
+                    await self._safe_send(
+                        chat_id=message.chat_id,
+                        text=reply,
+                        reply_markup=_CLEAR_KEYBOARD,
+                    )
+                    return
                 # Command replies often carry HTML markup (``<b>Missions</b>``,
                 # the brief's own headings). Routing through
                 # ``send_text`` picks the chunker + HTML-first send + plain
@@ -2643,6 +2643,14 @@ class TelegramBridge:
         # buttons leaves no trace that they were ever back.
         last_seen.record()
         parts = data.split(":", 2)
+        if len(parts) == 2 and parts[0] == "w":
+            # An answer to the clear question. Two parts rather than three
+            # because there is nothing to name: the thread is the one the
+            # button is sitting in, and the letter is the answer.
+            await self._handle_clear_callback(
+                chat_id, message_id, cb_id, letter=parts[1],
+            )
+            return
         if len(parts) == 3 and parts[0] == "q":
             # An answer to a piece of parked autonomy work. It resolves no
             # future: nothing is waiting on it, the item is in the store and
@@ -3233,110 +3241,121 @@ class TelegramBridge:
             )
             save_state(self._state.state_path, self._state.poll_state)
 
-        if body in _CLEAR_YES_TOKENS:
-            # The cockpit's reflection, not a second one. This ran a synthetic
-            # foreground turn against its own prompt, so a channel reflected
-            # under different instructions, held the person on `thinking…` for
-            # the length of an extra turn, and left nothing in the workspace
-            # inbox the operator could read afterwards.
-            # YES is the answer to "hand it back", not to "reflect": both
-            # answers reflect, and this is the one that also carries where the
-            # work stood into the fresh thread.
-            #
-            # **The handoff is asked for, not reconstructed.** It used to come
-            # out of the reflection, which read the transcript afterwards and
-            # delivered its package a model turn late. The agent writes it now,
-            # so this asks the conversation for one and the boundary at the end
-            # of THAT turn does the clearing, the recording and the handing
-            # over, exactly as it does for a boundary the agent reached itself.
-            # A conversation too short to have anything to say, or one that
-            # will not answer, still gets cleared: `after_turn` bounds that.
+        answer = _CLEAR_ANSWERS.get(body)
+        if answer is None:
+            # Anything else cancels — fall through, no reply yet so the
+            # normal turn handles it.
+            await self._safe_send(
+                chat_id=message.chat_id,
+                text="Clear cancelled. Processing your message normally.",
+            )
+            return False
+        await self.clear_the_thread(message.chat_id, answer)
+        return True
+
+    async def clear_the_thread(self, chat_id: int, answer: str) -> None:
+        """Close this thread the way the operator asked, and tell them.
+
+        One implementation for all three answers and for both ways of giving
+        one. A tap and a typed word reach here, the way an agenda answer does,
+        because a button meaning something slightly different from the words
+        printed beside it is a second answer to one question.
+
+        - `handoff`: ask the conversation to wrap up first, so where the work
+          stood carries into the next thread. The boundary at the end of that
+          turn does the clearing, the recording and the handing over, exactly
+          as it does for a boundary the agent reached itself. A conversation
+          that will not answer is cleared anyway: the operator asked for this
+          thread to be gone, and clearing only on cooperation would make the
+          ask a request.
+        - `reflect`: clear, and still distil what the thread taught. Declining
+          the handover is declining a briefing, not asking for what it taught
+          to be discarded, and `recall_history` still reaches the transcript.
+        - `clear`: gone, with no side effects at all. The one answer that
+          costs no model call.
+        """
+        if answer == "handoff":
             wrapped_up = False
             try:
-                session = self._session_for(message.chat_id, reset=False)
-                # The generation BEFORE the turn. `reset()` bumps it, so this
-                # is how the operator's clear finds out whether the boundary
-                # at the end of the wrap-up turn actually happened. Asked of
-                # the conversation rather than of its history, because a
-                # boundary leaves the package behind and a history of one
-                # message is not the same claim as a conversation that was
-                # cleared.
-                before = getattr(session.chat_session, "conversation_generation", None)
-                await self._drive_turn_in_its_place(
-                    session, message.chat_id, _ASK_BEFORE_CLEARING,
-                    could_not_run=_COULD_NOT_CARRY_ON,
-                    runtime_origin="handoff_asked",
-                    nothing_to_add=_NOTHING_LEFT_TO_CARRY,
+                session = self._session_for(chat_id, reset=False)
+                wrapped_up = await wrap_up_first(
+                    session.chat_session,
+                    f"{self.name}/{chat_id}",
+                    lambda text, origin: self._drive_turn_in_its_place(
+                        session, chat_id, text,
+                        could_not_run=_COULD_NOT_CARRY_ON,
+                        runtime_origin=origin,
+                        nothing_to_add=_NOTHING_LEFT_TO_CARRY,
+                    ),
                 )
-                now = getattr(session.chat_session, "conversation_generation", None)
-                wrapped_up = before is not None and now is not None and now > before
             except Exception:
                 log.exception(
-                    "telegram: /clear could not ask for a handoff on chat=%s",
-                    message.chat_id,
+                    "telegram: /clear could not ask for a handoff on chat=%s", chat_id,
                 )
             if wrapped_up:
-                return True
-            # It was asked and did not wrap up, or the turn could not run at
-            # all. The operator asked for this thread to be gone and it goes:
-            # clearing only when the agent cooperates would make `/clear` a
-            # request rather than an instruction.
+                return
+            answer = "reflect"
+            await self._safe_send(
+                chat_id=chat_id,
+                text=(
+                    "I could not wrap this thread up first, so nothing is "
+                    "carried over. Clearing it anyway."
+                ),
+            )
+        if answer == "reflect":
             try:
-                session = self._session_for(message.chat_id, reset=False)
+                session = self._session_for(chat_id, reset=False)
                 start_reflection(
                     self._app, session, session.chat_session,
                     reason="channel_clear", label="clear",
                 )
             except Exception:
                 log.exception(
-                    "telegram: /clear reflection failed to start for chat=%s",
-                    message.chat_id,
+                    "telegram: /clear reflection failed to start for chat=%s", chat_id,
                 )
-            await self.clear_session(message.chat_id)
-            await self._safe_send(
-                chat_id=message.chat_id,
-                text=(
-                    "🧹 Cleared. I could not wrap the thread up first, so "
-                    "nothing was carried over. Next message starts a fresh "
-                    "thread."
-                ),
-            )
-            return True
-        if body in _CLEAR_NO_TOKENS:
-            # NO still reflects. Clearing is one act — reflect, record, clear —
-            # and the answer decides only whether the package comes back into
-            # the fresh thread. A `no` that skipped the reflection threw the
-            # thread away unlearned, which is not what the operator was
-            # declining: they were declining to be handed a briefing they did
-            # not want, not asking for what it taught to be discarded. The
-            # record is still written and `recall_history` still reaches it.
-            try:
-                session = self._session_for(message.chat_id, reset=False)
-                start_reflection(
-                    self._app, session, session.chat_session,
-                    reason="channel_clear", label="clear",
-                )
-            except Exception:
-                log.exception(
-                    "telegram: /clear reflection failed to start for chat=%s",
-                    message.chat_id,
-                )
-            await self.clear_session(message.chat_id)
-            await self._safe_send(
-                chat_id=message.chat_id,
-                text=(
-                    "🧹 Cleared. I am still writing down what this thread "
-                    "taught me. Next message starts a fresh thread."
-                ),
-            )
-            return True
-        # Anything else cancels — fall through, no reply yet so the
-        # normal turn handles it.
+        await self.clear_session(chat_id)
         await self._safe_send(
-            chat_id=message.chat_id,
-            text="Clear cancelled. Processing your message normally.",
+            chat_id=chat_id,
+            text=(
+                "🧹 Cleared. I am still writing down what this thread taught "
+                "me. Next message starts a fresh thread."
+                if answer == "reflect"
+                else "🧹 Cleared. Next message starts a fresh thread."
+            ),
         )
-        return False
+
+    async def _handle_clear_callback(
+        self, chat_id: int, message_id: int | None, cb_id: str, *, letter: str,
+    ) -> None:
+        """A tapped answer to the clear question.
+
+        Same three answers the typed words reach, through the same function.
+        The pending stamp is dropped first so a crash below cannot leave the
+        chat waiting on a question nobody can answer twice.
+        """
+        answer = _CLEAR_LETTERS.get(letter)
+        if answer is None:
+            await self._safe_answer_callback(cb_id, "Unknown action.")
+            return
+        chat_key = str(chat_id)
+        with self._state.with_lock():
+            self._state.poll_state.pending_clear.pop(chat_key, None)
+            # Answering marks the day, whichever way it is answered.
+            self._state.poll_state.last_message_ts[chat_key] = (
+                datetime.now(timezone.utc).isoformat()
+            )
+            save_state(self._state.state_path, self._state.poll_state)
+        await self._safe_answer_callback(cb_id, _CLEAR_TAPPED[answer])
+        if message_id is not None:
+            # The question is answered, so its buttons go: left in place they
+            # invite a second answer to a thread that has already been closed.
+            try:
+                await self._api.edit_message_reply_markup(
+                    chat_id=chat_id, message_id=message_id, reply_markup=None,
+                )
+            except Exception:
+                log.warning("telegram: could not clear the /clear keyboard", exc_info=True)
+        await self.clear_the_thread(chat_id, answer)
 
     async def _handle_agenda_callback(
         self, chat_id: int, message_id: int | None, cb_id: str,
@@ -4670,8 +4689,43 @@ def _strip_html_tags(text: str) -> str:
 
 # `/clear` confirmation tokens. Lowercased; the bridge's
 # follow-up handler casefolds the incoming body before comparing.
-_CLEAR_YES_TOKENS: frozenset[str] = frozenset({"yes", "y", "sure", "ok", "👍"})
-_CLEAR_NO_TOKENS: frozenset[str] = frozenset({"no", "n", "nope", "skip", "👎"})
+#: What the operator may type in answer to the clear question, and which of
+#: the three answers each word is.
+#:
+#: The buttons are the control and these are the fallback, so the same three
+#: answers are reachable either way. `yes` and `no` are kept pointing where
+#: they always pointed, because an operator who has been answering this
+#: question for months must not find that the word they always type now means
+#: something else.
+_CLEAR_ANSWERS: dict[str, str] = {
+    "yes": "handoff", "y": "handoff", "sure": "handoff", "ok": "handoff",
+    "👍": "handoff", "hand over": "handoff", "handover": "handoff",
+    "no": "reflect", "n": "reflect", "nope": "reflect", "skip": "reflect",
+    "👎": "reflect", "reflect": "reflect",
+    "clear": "clear", "just clear": "clear", "neither": "clear",
+}
+
+#: The three answers as buttons. Labels say the consequence, because a person
+#: tapping one cannot see the sentence that explained it a moment ago.
+_CLEAR_KEYBOARD: dict = {
+    "inline_keyboard": [
+        [{"text": "Hand over and clear", "callback_data": "w:h"}],
+        [{"text": "Clear, and keep what it taught", "callback_data": "w:r"}],
+        [{"text": "Just clear", "callback_data": "w:c"}],
+    ]
+}
+
+#: The same three, as the one character a callback payload can afford.
+_CLEAR_LETTERS: dict[str, str] = {"h": "handoff", "r": "reflect", "c": "clear"}
+
+#: What a tap is answered with while the thread is being closed. Telegram
+#: shows this as a toast, so it is the only acknowledgement that arrives
+#: before the work starts.
+_CLEAR_TAPPED: dict[str, str] = {
+    "handoff": "Wrapping up first.",
+    "reflect": "Clearing, and writing down what it taught me.",
+    "clear": "Clearing.",
+}
 _CLEAR_PENDING_TTL_S = 300.0
 
 

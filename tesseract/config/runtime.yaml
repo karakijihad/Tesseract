@@ -51,10 +51,22 @@ spawn_stall_seconds: 900
 # completion path.
 spawn_heartbeat_seconds: 180
 
+# A tool result longer than tool_result_max_chars is not sent whole. All of it
+# is saved to a file under runtime/tool-results/, and the assistant is shown
+# the first tool_result_preview_chars characters and where the rest is. Across
+# one turn's results together the line is tool_results_per_message_max_chars,
+# and the longest are saved first. Nothing is cut: the assistant can read the
+# saved file whenever it needs more. The preview has to be shorter than the
+# per-result line, and that line no longer than the per-turn one.
+tool_result_max_chars: 50000
+tool_results_per_message_max_chars: 200000
+tool_result_preview_chars: 2000
+
 # The largest share of the model's context window that ONE tool result may
 # take, as a fraction. A result over the line is cut, and the cut says so.
-# This is the backstop behind each tool's own limits: a tool bounds what it
-# returns, and this bounds what any tool can put in front of the model at all.
+# It bounds the results the lines above do not save: a file read, which is
+# read again over fewer lines rather than saved, and a result whose file could
+# not be written.
 # It exists because a single grep came back 44 MB (one match inside a file
 # holding one record per line), which made the next request too large for
 # every model in the chain, and the session could not call any of them. A

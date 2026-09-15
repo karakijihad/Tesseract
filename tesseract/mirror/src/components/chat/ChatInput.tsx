@@ -273,8 +273,8 @@ export function ChatInput({ variant }: Props) {
       const parsed = parseSlashInput(trimmed);
       if (pendingAttachments.length === 0 && parsed.kind === 'command' && parsed.cmd) {
         // Bare /reset opens the confirm dialog instead of dispatching directly.
-        // /reset reflect and /reset clear bypass the dialog (used by the dialog
-        // itself + by power users / scripts).
+        // /reset handoff, /reset reflect and /reset clear bypass the dialog
+        // (used by the dialog itself + by power users / scripts).
         if (parsed.cmd === '/reset') {
           useResetDialogStore.getState().openDialog();
         } else {

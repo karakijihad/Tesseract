@@ -167,10 +167,12 @@ async def _handle_clear(ctx: TelegramCommandContext) -> str:
         save_state(ctx.bridge._state.state_path, poll_state)  # noqa: SLF001
     return (
         "🧹 Clear this thread?\n"
-        "Either way I reflect first and write down what it taught me.\n"
-        "Reply <b>YES</b> to also hand the state over to the fresh thread, "
-        "<b>NO</b> to start clean, "
-        "or anything else to cancel."
+        "<b>Hand over and clear</b>: I wrap up first, so the next thread "
+        "knows what the work was and what is left.\n"
+        "<b>Clear, and keep what it taught</b>: nothing carries over, but "
+        "I still write down what I learned.\n"
+        "<b>Just clear</b>: gone, with nothing kept.\n"
+        "Tap one, or type it. Anything else cancels."
     )
 
 

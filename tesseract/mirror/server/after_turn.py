@@ -129,6 +129,23 @@ ASK_FOR_THE_HANDOFF = (
 )
 
 
+#: What the CONVERSATION is asked when the OPERATOR is closing it and wants
+#: where the work stood carried into the next one.
+#:
+#: Not `ASK_FOR_THE_HANDOFF`, and the difference is the whole of why there are
+#: two: that one says the room is full, which is the runtime's reason, and this
+#: one says a person asked, which is not the same event and does not read the
+#: same to whoever is watching. What follows them IS the same, which is why the
+#: asking itself is one function.
+ASK_BEFORE_CLEARING = (
+    "The operator is closing this conversation and wants where the work stood "
+    "carried into the next one. Wrap up now with `session_continue`: what this "
+    "was for, what got done, what is left, and what to do first. Choose "
+    "`continue` if the work goes on and `reset` if it is finished. Keep "
+    "anything you say short. This conversation is being cleared either way."
+)
+
+
 #: What a person is told when a conversation was asked and would not answer.
 #: It names the act rather than softening it: the runtime broke a conversation
 #: off, and a notice that read like an ordinary reset would hide the only thing
@@ -703,6 +720,47 @@ async def _ask_for_a_handoff(
         log.exception("could not ask %s where the work stood", label)
         return False
     return True
+
+
+async def wrap_up_first(
+    chat_session: Any,
+    label: str,
+    start_turn: Callable[[str, str], Awaitable[None]],
+) -> bool:
+    """Ask this conversation to wrap up because a PERSON is closing it, and say
+    whether it did.
+
+    The operator's half of the same act the runtime performs at a hard
+    boundary, and it is one function so there is one answer to "did the
+    conversation get wrapped up". Each surface still starts its own turn and
+    performs its own fallback clear, because starting a turn is the thing only
+    a surface knows how to do.
+
+    **Answered by the conversation's generation and not by its history.**
+    `reset()` bumps the generation, so this reads whether a BOUNDARY happened.
+    A boundary leaves the package behind, so a history of one message is not
+    the same claim, and a conversation the agent merely emptied by other means
+    would read as wrapped up.
+
+    `False` means nothing was cleared and the caller must clear it: the
+    conversation could not say, or the turn could not run. The operator asked
+    for this conversation to be gone, and clearing only when the agent
+    cooperates would make the ask a request rather than an instruction.
+
+    Never raises.
+    """
+    before = getattr(chat_session, "conversation_generation", None)
+    try:
+        await start_turn(ASK_BEFORE_CLEARING, "handoff_asked")
+    except Exception:
+        log.exception("%s could not be asked to wrap up", label)
+        return False
+    now = getattr(chat_session, "conversation_generation", None)
+    if before is None or now is None:
+        # A session that cannot say has not wrapped up, which is the honest
+        # reading and the safe one: the caller clears.
+        return False
+    return now > before
 
 
 def _count_the_ask(chat_session: Any, label: str) -> int | None:

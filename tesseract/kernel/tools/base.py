@@ -405,6 +405,14 @@ class Tool(ABC):
     # (filesystem write, scheduler, mission control) are trusted.
     untrusted_source: ClassVar[bool] = False
 
+    # How long one result from this tool may be before it is saved to disk and
+    # previewed instead of sent whole (`brain/tool_spill.py`). `None` takes the
+    # runtime's `tool_result_max_chars`. A number may lower that, never raise
+    # it. `math.inf` opts out entirely, for a tool whose saved output would be
+    # read back with the tool itself; such a result is bounded by the window
+    # ceiling instead.
+    max_result_chars: ClassVar[float | None] = None
+
     # Lean-agent-os P1 Task 2 — schema-visibility tier. "core" tools'
     # schemas are always sent to the chat model; "extended" tools are
     # omitted from the per-turn payload unless the session has surfaced

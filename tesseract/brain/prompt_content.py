@@ -319,21 +319,20 @@ def _build_skills_block(root: Path) -> str:
     script execution stays on the existing bash/subprocess ASK path.
     Empty/missing `workspace/skills/` → "" (section omitted, zero noise).
 
-    **A carried playbook arrives with its contract; the rest arrive as a
-    line.** `carried.txt` is the dial (`brain/playbook_set.py`), the same one
-    `working_set.yaml` is for tools, and this is where it is spent: a carried
-    playbook renders its version, its status and its `use_when`, which is what
-    lets the assistant reach for it without a round trip, and every other one
-    renders its description and the `(search)` mark. Nothing is hidden — a
-    playbook off the list is named here, so it can be looked for at all, which
-    is the whole reason the tool map lists all 150 tools rather than the 60
-    carrying a schema.
+    **One arm, and the carried/not-carried distinction is the whole dial.**
+    Every skill declares the same contract (ruling 12: a file that declared
+    none of it still loads, and reports each missing key as a gap rather than
+    escaping the dial). `carried.txt` is the dial (`brain/playbook_set.py`),
+    the same one `working_set.yaml` is for tools: a carried skill renders its
+    version, its status and its `use_when`, which is what lets the assistant
+    reach for it without a round trip, and every other one renders its
+    description and the `(search)` mark. Nothing is hidden — a skill off the
+    list is named here, so it can be looked for at all, which is the whole
+    reason the tool map lists all 150 tools rather than the 60 carrying a
+    schema.
 
-    Plain skills are not on the dial. They carry a name and a description and
-    nothing else, so there is no contract to defer and no saving to make.
-
-    **WHAT A CARRIED PLAYBOOK ACTUALLY COSTS, and this function decides it:**
-    its description, `Playbook, v<version>, <status>.`, its `use_when`, and its
+    **WHAT A CARRIED SKILL ACTUALLY COSTS, and this function decides it:** its
+    description, `Playbook, v<version>, <status>.`, its `use_when`, and its
     path. NOT its trigger, NOT its preconditions, NOT its steps. Those come
     from `playbook_search`, which is the off-list path.
 
@@ -357,14 +356,12 @@ def _build_skills_block(root: Path) -> str:
         return ""
     cannot_run = blocking_gaps(skills)
     chosen = load_carried_names(root / "skills" / CARRIED_FILENAME)
-    playbooks = [s for s in skills if s.is_playbook]
-    deferred = sum(1 for s in playbooks if s.name not in chosen)
+    deferred = sum(1 for s in skills if s.name not in chosen)
     lead = (
         f"You have {len(skills)} skill(s) — prose self-extensions you (or a "
         "delegate) drafted for a repeated chore or capability gap. Read the "
         "`SKILL.md` body with `file_read` before using one; don't guess "
-        "behavior from the name alone. A skill marked as a playbook is a "
-        "procedure that worked before: its `use_when` says when to reach for "
+        "behavior from the name alone. Its \"Use when\" says when to reach for "
         "it, and one marked *cannot run* is not to be used until it is fixed."
     )
     if deferred:
@@ -377,9 +374,9 @@ def _build_skills_block(root: Path) -> str:
     lines = [lead, ""]
     for skill in skills:
         gap = cannot_run.get(skill.name)
-        if skill.is_playbook and skill.name not in chosen:
+        if skill.name not in chosen:
             line = f"- `{skill.name}`{_DEFERRED_MARK} — {skill.description}"
-            # The one thing a pointer still says. A broken playbook the model
+            # The one thing a pointer still says. A broken skill the model
             # searches for costs the search before it learns it cannot be
             # followed, and this is a line of text against a wasted round trip.
             if gap is not None:
@@ -387,15 +384,14 @@ def _build_skills_block(root: Path) -> str:
             lines.append(line)
             continue
         line = f"- `{skill.name}` — {skill.description}"
-        if skill.is_playbook:
-            line += f" Playbook, v{skill.version or '?'}, {skill.status or 'no status'}."
-            if skill.use_when:
-                line += f" Use when: {skill.use_when}"
-            if gap is not None:
-                line += f" *Cannot run: {gap.field} {gap.detail}.*"
+        line += f" Playbook, v{skill.version or '?'}, {skill.status or 'no status'}."
+        if skill.use_when:
+            line += f" Use when: {skill.use_when}"
+        if gap is not None:
+            line += f" *Cannot run: {gap.field} {gap.detail}.*"
         # Relative, like every other pointer in this file, and computed here
-        # rather than at the top of the loop because a deferred playbook
-        # returns above without one.
+        # rather than at the top of the loop because a deferred skill returns
+        # above without one.
         #
         # Workspace-relative, and opened with `workspace_read`. It used to be
         # `tesseract/workspace/...` for `file_read`, which anchors a relative

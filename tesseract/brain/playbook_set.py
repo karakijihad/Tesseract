@@ -124,7 +124,7 @@ def render(chosen: list[str], entries: list[SkillEntry]) -> str:
     Dropping it would turn a typo into "that playbook stopped being carried
     and nobody said so".
     """
-    facts = {e.name: e.description for e in entries if e.is_playbook}
+    facts = {e.name: e.description for e in entries}
     picked = set(chosen)
     lines: list[str] = [_BANNER]
 

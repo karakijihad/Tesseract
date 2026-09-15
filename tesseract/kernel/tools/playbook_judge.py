@@ -173,16 +173,6 @@ class PlaybookJudgeTool(Tool):
                 is_error=True,
                 caller_error=True,
             )
-        if not entry.is_playbook:
-            return ToolResult(
-                output=(
-                    f"{name} is a skill, not a playbook, so there is no procedure "
-                    "here to judge. Use `skill_promote` to activate a drafted "
-                    "skill, or `skill_refine` to change one."
-                ),
-                is_error=True,
-                caller_error=True,
-            )
 
         if inp.verdict == "drop":
             return self._drop(name, folder, was_pending, inp.why)
@@ -293,7 +283,7 @@ class PlaybookJudgeTool(Tool):
         return True, None
 
     def _not_found(self, name: str) -> str:
-        have = sorted(e.name for e in load_skills(self._skills_dir) if e.is_playbook)
+        have = sorted(e.name for e in load_skills(self._skills_dir))
         return (
             f"No playbook called {name!r}, active or pending. "
             f"Playbooks here: {', '.join(have) or '(none)'}"

@@ -648,6 +648,11 @@ def why_a_step_is_refused(
             f"that step is estimated at ${estimate_usd:.2f} and {project.name} "
             f"has ${room:.2f} left today"
         )
+    if not criteria.strip():
+        return (
+            f"a step on {project.name} has to say what evidence would show it "
+            "is done, and its success criteria is blank"
+        )
     undeclared = checks_named(criteria) - set(declared_checks(project))
     if undeclared:
         return (

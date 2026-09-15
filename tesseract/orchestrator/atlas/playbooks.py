@@ -1,12 +1,11 @@
 """A playbook on the map, and the turns it was learned from.
 
-A playbook is a skill that declares the procedure contract
-(`brain/skills.py::PLAYBOOK_KEYS`): the shape of problem it answers, the steps
-and the tool each one uses, what done looks like, and the turns it came from.
-It goes in the compartment for what the machine is made of, beside the stages
-and the manifest entries, because it is the same kind of claim a level up: a
-thing the runtime does when the shape of a problem calls for it, declared
-rather than remembered.
+Every skill declares the procedure contract (`brain/skills.py::CONTRACT_KEYS`):
+the shape of problem it answers, the steps and the tool each one uses, what
+done looks like, and the turns it came from. It goes in the compartment for
+what the machine is made of, beside the stages and the manifest entries,
+because it is the same kind of claim a level up: a thing the runtime does
+when the shape of a problem calls for it, declared rather than remembered.
 
 **Its own kind, not a capability.** A capability's record is a module under
 the package tree and `locate.py` holds it to that (`.py`, under the source
@@ -65,7 +64,7 @@ def build_playbooks(
     emit = Emitter(atlas, now=now, version=version, windows=windows)
     seen = 0
     for entry in load_skills(skills_dir):
-        if not entry.is_playbook or entry.status == "retired":
+        if entry.status == "retired":
             continue
         path = skills_dir / entry.dirname / SKILL_FILENAME
         locator = f"{entry.dirname}/{SKILL_FILENAME}"

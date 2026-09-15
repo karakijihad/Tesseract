@@ -628,10 +628,11 @@ def _sha256(text: str) -> str:
 def _live_revisions(skills_dir: Path) -> dict[str, str]:
     """Every skill FOLDER on disk, and the revision a usage row must carry.
 
-    A playbook's is its whole-number `version`; a plain skill's is `""`,
-    meaning its rows are counted by name because it has no revision to count
-    against. A folder whose `SKILL.md` will not parse is also `""`, and that
-    is the point of walking the folders rather than `load_skills`.
+    A skill that declared a whole-number `version` is counted against it; one
+    that never declared a version is `""`, meaning its rows are counted by
+    name because it has no revision to count against. A folder whose
+    `SKILL.md` will not parse is also `""`, and that is the point of walking
+    the folders rather than `load_skills`.
 
     **`load_skills` returns "every well-formed skill", and a skill that will
     not parse is exactly the one the unreadable card exists for.** Building
@@ -663,9 +664,7 @@ def _live_revisions(skills_dir: Path) -> dict[str, str]:
         # withdrawn puts a rewrite of it back in front of the operator.
         if entry is not None and entry.status == "retired":
             continue
-        out[folder.name] = (
-            entry.version if entry is not None and entry.is_playbook else ""
-        )
+        out[folder.name] = entry.version if entry is not None else ""
     return out
 
 
@@ -783,7 +782,7 @@ def _retire_worse_revisions(
     predecessor over the window. Returns what was retired, with both records,
     for the cards."""
     retired: list[tuple[str, Reuse, Reuse]] = []
-    actives = [e for e in load_skills(skills_dir) if e.is_playbook and e.status == "active"]
+    actives = [e for e in load_skills(skills_dir) if e.status == "active"]
     # One pass of the log and the turn tree for all of them. `measure` is the
     # one-name case and delegates here anyway, so asking it per playbook read
     # the whole usage log and re-walked the whole window once per playbook.

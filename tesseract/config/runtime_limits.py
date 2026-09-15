@@ -8,6 +8,7 @@ no hardcoded infrastructure defaults per project rule.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -161,6 +162,38 @@ def load_tool_result_window_share(path: Path) -> float:
             f"tool_result_window_share must be above 0 and at most 1, got {value}"
         )
     return value
+
+
+@dataclass(frozen=True)
+class ToolResultSpill:
+    """When a tool result is saved to disk instead of sent whole."""
+
+    max_chars: int
+    per_message_chars: int
+    preview_chars: int
+
+
+def load_tool_result_spill(path: Path) -> ToolResultSpill:
+    """Return the three `tool_result*` saving limits from runtime.yaml.
+
+    The ordering is enforced because each half of it is a promise the saving
+    makes. A preview no smaller than the ceiling that triggered it makes a
+    saved result longer than the one it replaced, and a per-result ceiling above
+    the per-turn one would let a single result pass the first check only to be
+    caught by the second.
+    """
+    spill = ToolResultSpill(
+        max_chars=_load_positive_int(path, "tool_result_max_chars", 1),
+        per_message_chars=_load_positive_int(path, "tool_results_per_message_max_chars", 1),
+        preview_chars=_load_positive_int(path, "tool_result_preview_chars", 1),
+    )
+    if not spill.preview_chars < spill.max_chars <= spill.per_message_chars:
+        raise ValueError(
+            "tool_result_preview_chars must be below tool_result_max_chars, which "
+            "must be at most tool_results_per_message_max_chars; got "
+            f"{spill.preview_chars}, {spill.max_chars}, {spill.per_message_chars}"
+        )
+    return spill
 
 
 def load_spawn_heartbeat_interval_s(path: Path) -> float:

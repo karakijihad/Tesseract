@@ -51,7 +51,7 @@ from aiohttp import web
 
 from tesseract.brain import tool_usage as tool_usage_mod
 from tesseract.brain.playbook_set import CARRIED_FILENAME
-from tesseract.brain import prompt_payload
+from tesseract.brain import prompt_payload, request_size
 from tesseract.integrations._channels_config import load_channels_config
 from tesseract.paths import log_dir
 
@@ -525,9 +525,16 @@ async def payload(request: web.Request) -> web.Response:
 
     # `ceiling` is not repeated here — every reading carries its own, and one
     # more copy is one more thing that can disagree with them.
+    #
+    # `chars_per_token` is the runtime's one measured divisor, and it prices
+    # the PROSE half only. The tools array is priced structurally, because a
+    # namespace carries every member's schema in the JSON and the provider
+    # charges for the header alone; a client multiplying characters by this
+    # would read that array five times high. Each reading carries the tools
+    # figure already worked out for exactly that reason.
     return web.json_response({
         "readings": readings,
-        "chars_per_token": prompt_payload.CHARS_PER_TOKEN,
+        "chars_per_token": request_size.CHARS_PER_TOKEN,
     })
 
 

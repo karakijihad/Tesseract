@@ -29,3 +29,23 @@
   justify-content: flex-end;
   margin-top: 0.4rem;
 }
+
+/* Three answers compared at once, so they line up: one column for the control
+   and one for what it means, the same way every other list of a kind here
+   does. SIZE AND PLACEMENT ONLY — nothing paints. */
+.reset-dialog-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.reset-dialog-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.reset-dialog-hint {
+  line-height: 1.4;
+  margin: 0;
+}

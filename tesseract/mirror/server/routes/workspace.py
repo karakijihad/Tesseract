@@ -587,7 +587,7 @@ def _subject_of(ev: WorkspaceEvent, applied_version: str = "") -> dict[str, Any]
 
 def _live_skill_version(skills_dir: Path, name: str) -> str:
     """The revision the skill carries NOW, read off the file that was just
-    written. "" for a plain skill, which has none, and on any failure to
+    written. "" for a skill that never declared one, and on any failure to
     parse: the ledger row is better short a field than carrying a guess."""
     from tesseract.brain.skills import load_skill_folder
 
@@ -595,7 +595,7 @@ def _live_skill_version(skills_dir: Path, name: str) -> str:
         entry = load_skill_folder(skills_dir / name)
     except Exception:
         return ""
-    return entry.version if entry is not None and entry.is_playbook else ""
+    return entry.version if entry is not None else ""
 
 
 def _apply_skill_refinement(

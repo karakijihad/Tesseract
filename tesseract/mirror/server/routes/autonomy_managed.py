@@ -498,11 +498,12 @@ def agents() -> list[dict[str, Any]]:
 
 
 def playbooks(app: web.Application) -> list[dict[str, Any]]:
-    """Every playbook: a skill that has declared the procedure contract.
+    """Every skill: one kind, one procedure contract (ruling 12).
 
-    Every playbook is the operator's. Skills have one root,
+    Every skill is the operator's. Skills have one root,
     `workspace_dir()/skills`, and it is the operator's in every install: no
-    playbook ships, so nothing here is filed under the app.
+    skill ships, so nothing here is filed under the app. A skill that never
+    declared the contract still appears, with its fields blank.
 
     A retired revision is listed with the rest, status and all: this room is
     the record, and it is the prompt (`brain/prompt.py`'s skills block) that
@@ -513,11 +514,7 @@ def playbooks(app: web.Application) -> list[dict[str, Any]]:
     from tesseract.brain.skills import load_skills
 
     try:
-        entries = [
-            entry
-            for entry in load_skills(paths.workspace_dir() / "skills")
-            if entry.is_playbook
-        ]
+        entries = load_skills(paths.workspace_dir() / "skills")
     except Exception:  # noqa: BLE001 — a room says less rather than 500ing
         log.exception("managed route: the playbook roster could not be read")
         return []

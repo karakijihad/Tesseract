@@ -19,7 +19,7 @@ import json
 import logging
 import threading
 from collections.abc import Collection
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +45,56 @@ def history_path(month: str) -> Path:
     return history_dir() / f"{month}.jsonl"
 
 
+#: How many marks one row keeps. The row is kept for good and read in bulk, so
+#: it says where to look rather than listing everything a long task touched.
+_RECEIPTS_KEPT = 20
+
+
+def _receipts_for(item: AgendaItem) -> list[dict[str, str]]:
+    """The marks the item's own turns left, copied while they still exist.
+
+    The receipt log ages out with the turn records and this row does not, so
+    the join is made at close or never. The task's own `record` receipt is left
+    out: it points at the file this row outlives.
+    """
+    if not item.turn_ids:
+        return []
+    from tesseract.lib.clock import to_local
+    from tesseract.orchestrator.turns.receipts import read_day, receipts_root
+
+    root = receipts_root()
+    if not root.is_dir():
+        return []
+
+    def _day(when: datetime) -> date:
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return to_local(when).date()
+
+    first, last = _day(item.created_at), _day(item.updated_at)
+    turns = set(item.turn_ids)
+    kept: list[dict[str, str]] = []
+    for path in sorted(root.glob("*.jsonl")):
+        try:
+            on = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if not first <= on <= last:
+            continue
+        for (turn, _stage), receipt in read_day(on).items():
+            if turn not in turns or (receipt.kind == "record" and receipt.id == item.id):
+                continue
+            kept.append(receipt.to_dict())
+            if len(kept) >= _RECEIPTS_KEPT:
+                return kept
+    return kept
+
+
 def row_for(item: AgendaItem) -> dict[str, Any]:
     """What survives the record: enough to name, date and count it."""
     closed = item.updated_at.astimezone(timezone.utc)
     created = item.created_at.astimezone(timezone.utc)
-    return {
+    row: dict[str, Any] = {
         "id": item.id,
         "source": item.source.value,
         "goal": item.goal,
@@ -66,6 +111,15 @@ def row_for(item: AgendaItem) -> dict[str, Any]:
         "project_id": item.project_id,
         "schema_version": item.schema_version,
     }
+    # What the task left in the world, by the far side's own ids, which stay
+    # checkable after every store they were joined from has aged out. Turn ids
+    # and the criteria do not: they point into the record, which carries them.
+    # Absent rather than empty, because the row is held to a fraction of the
+    # smallest record and most tasks leave nothing.
+    marks = _receipts_for(item)
+    if marks:
+        row["receipts"] = marks
+    return row
 
 
 def _ids_in(path: Path) -> set[str]:

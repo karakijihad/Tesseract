@@ -6,6 +6,7 @@ Concurrent-safe, read-only.
 from __future__ import annotations
 
 import asyncio
+import math
 from pathlib import Path
 from typing import ClassVar
 
@@ -46,6 +47,10 @@ class FileReadTool(Tool):
     # would otherwise treat as fresh system text. ChatSession wraps the
     # output in the UNTRUSTED_TOOL_OUTPUT envelope before history append.
     untrusted_source: ClassVar[bool] = True
+    # A saved result is read back with this tool, so saving this tool's own
+    # output would only point it at a copy of a file it can already read over
+    # fewer lines.
+    max_result_chars: ClassVar[float | None] = math.inf
 
     group: ClassVar[str] = "files-on-disk"
     summary: ClassVar[str] = "Read a file's contents as numbered lines."

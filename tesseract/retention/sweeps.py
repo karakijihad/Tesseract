@@ -1116,6 +1116,45 @@ def turn_manifests(keep_days: int, action: Action) -> Swept:
     return total
 
 
+def tool_results_roots() -> tuple[Path, ...]:
+    from tesseract.brain.tool_spill import spill_root
+
+    return (spill_root(),)
+
+
+def tool_results(keep_days: int, action: Action) -> Swept:
+    """`runtime/tool-results/YYYY-MM-DD/<call>.txt`: the whole of each tool
+    result too long to send, in a directory named for the day it was saved.
+
+    Aged on the directory name, for the reason `turn_manifests` is: a backup
+    touching a file would make an old one look young forever.
+    """
+    from tesseract.lib import clock
+
+    (root,) = tool_results_roots()
+    if not root.is_dir():
+        return Swept()
+    cutoff = clock.today() - timedelta(days=keep_days)
+    total = Swept()
+    for day_dir in sorted(root.iterdir()):
+        if not day_dir.is_dir():
+            continue
+        try:
+            stamped = date.fromisoformat(day_dir.name)
+        except ValueError:
+            continue
+        if stamped >= cutoff:
+            continue
+        for path in sorted(day_dir.glob("*.txt")):
+            total += _retire(path, action, root / "archive" / day_dir.name)
+        try:
+            if not any(day_dir.iterdir()):
+                day_dir.rmdir()
+        except OSError:
+            pass
+    return total
+
+
 def loop_stalls_roots() -> tuple[Path, ...]:
     from tesseract.orchestrator import loop_stalls as record
 

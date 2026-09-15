@@ -16,6 +16,22 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **Clearing a conversation now asks you what to keep.** Three answers,
+  wherever you type `/clear`: hand the state over so the next conversation
+  knows what the work was and what is left, clear but keep what the
+  conversation taught, or clear with nothing kept at all. The last one costs
+  nothing; before, every way out of that question paid for the app to think
+  about it. On your phone the three arrive as buttons, and typing still works
+  the way it always did.
+- **What the app tells you a turn costs is right again.** Since tools started
+  travelling in groups, the panel had been reading the tool half about five
+  times higher than it is: the group headings carry every tool's full
+  description in the message and the provider only charges for the heading.
+  The panel counts that properly now, and says both what the tool list weighs
+  and what it costs, so you can see what the grouping is saving. The point at
+  which a conversation gets wrapped up was measured the same wrong way and is
+  corrected with it.
+
 - **When a conversation is wrapped up, it hands over what it was doing right
   away.** Before, the app read the whole conversation back afterwards to work
   out where things stood, which took most of a minute on a long one, and the

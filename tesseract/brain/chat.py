@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
-from tesseract.brain import context_report, context_signal
+from tesseract.brain import context_report, context_signal, tool_spill
 from tesseract.brain.auto_recall import (
     auto_recall,
     format_recall_block,
@@ -632,6 +632,11 @@ def bound_tool_result(
 ) -> ToolResult:
     """Cut a tool result down to `share` of the model's context window.
 
+    Behind `tool_spill`, which saves a long result whole rather than cutting
+    it. What still reaches this is a tool that opts out of saving (`file_read`,
+    whose source is already on disk) and a result whose file could not be
+    written, and for both a cut that says so is the honest answer.
+
     Each tool bounds what it returns; this bounds what ANY tool can put in
     front of the model, which is a different job. A single grep once came
     back 44 MB, which made the next request larger than every window in the
@@ -804,7 +809,11 @@ def _trim_to_budget(
     and a trim mid-tool-loop dropped exactly them.
 
     This is the emergency guard, and reaching it means the boundary did not
-    get there first. Every step below is therefore
+    get there first. A single turn's tool traffic can no longer carry a
+    payload here, because `tool_spill` bounds each result and each batch
+    before they enter history, so a firing means the conversation itself
+    outgrew the ceiling. It is also expensive twice over: everything it clears
+    sits in the prefix the provider has cached. Every step below is therefore
     logged at WARNING, including the ones that used to return silently: a
     payload that quietly stopped carrying the conversation is the failure mode
     this guard existed to prevent, and it caused it once already.
@@ -1655,6 +1664,10 @@ class ChatSession:
     # counting `system_prompt` and that is the string frozen when the
     # session was built, not the one a `prompt_builder` rebuilds each turn.
     _system_tokens: int = field(default=0, repr=False)
+    #: What the tools array costs, measured once per conversation. `None` is
+    #: "not measured yet"; zero is a real answer for a session with no
+    #: registry. Dropped by `refresh_head`, which is what a boundary calls.
+    _tools_tokens_cached: int | None = field(default=None, repr=False)
     _observer_subscriber: Any | None = field(default=None, repr=False)
     _observer_last_index: int = field(default=0, repr=False)
     # This conversation's own rolling window into the observer. It lives here
@@ -2482,6 +2495,11 @@ class ChatSession:
         """
         self._held_head = None
         self._held_for = None
+        # And the tools array's size, which is held for the same span and for
+        # the same reason. A session that unlocked a tool mid-conversation
+        # sends a larger array from the next boundary on, and a figure kept
+        # past the thing it measured is the defect this whole phase is about.
+        self._tools_tokens_cached = None
         context_signal.forget(self._failures_scope_id)
 
     def _current_system_prompt(self) -> str:
@@ -2564,7 +2582,7 @@ class ChatSession:
         if ctx <= 0:
             return False
         return tokens_from_chars(chars) >= self._boundary_trigger_tokens(
-            ctx, self._system_tokens,
+            ctx, self._system_tokens, self._tools_tokens(),
         )
 
     def _messages_for_turn(self) -> list[dict[str, Any]]:
@@ -4084,8 +4102,16 @@ class ChatSession:
             # the prefix away for it would pay the whole cost of a switch that
             # did not happen.
             # Every result passes through here, so this is where a result too
-            # large to send is caught. Read at call time, like every other
-            # runtime limit, so an operator edit applies without a restart.
+            # large to send is caught, before it is streamed or appended. A
+            # long one is saved whole and previewed; the window cut behind it
+            # bounds only what saving does not reach.
+            result = tool_spill.fit_one(
+                result,
+                tool=self.registry.get(tc.name),
+                tool_name=tc.name,
+                call_id=tc.id,
+                spill=tool_spill.limits(),
+            )
             return idx, tc, bound_tool_result(
                 result,
                 tc.name,
@@ -4186,7 +4212,16 @@ class ChatSession:
                 results[idx] = (tc, result)
                 yield _result_chunk(tc, result)
 
-            # All tasks completed. Append history in pending_calls order so
+            # All tasks completed. Bound the batch as one message first: ten
+            # results each under the per-result line can still be too many
+            # together. Nothing is appended yet, so nothing sent is chosen.
+            results = tool_spill.fit_batch(
+                results,
+                sent=history_written,
+                tool_of=self.registry.get,
+                spill=tool_spill.limits(),
+            )
+            # Append history in pending_calls order so
             # the next adapter call sees a deterministic sequence regardless
             # of which tool finished first.
             for i, tc in enumerate(pending_calls):
@@ -4301,6 +4336,15 @@ class ChatSession:
                         "injected to satisfy function_call/output pairing "
                         "invariant]"
                     )
+                # The same bound as the normal path. What this loop or the
+                # normal one already appended is `history_written`, and is
+                # counted but never chosen.
+                results = tool_spill.fit_batch(
+                    results,
+                    sent=history_written,
+                    tool_of=self.registry.get,
+                    spill=tool_spill.limits(),
+                )
                 for i, tc in enumerate(pending_calls):
                     if i in history_written:
                         continue
@@ -4543,7 +4587,9 @@ class ChatSession:
             self._assemble_for_turn()[0]
         )
         conversation_tokens = self.adapter.count_tokens(conversation)
-        trigger = self._boundary_trigger_tokens(ctx, self._system_tokens)
+        trigger = self._boundary_trigger_tokens(
+            ctx, self._system_tokens, self._tools_tokens()
+        )
         # Published on the way past, from the numbers the decision already
         # compared. The next turn's prompt renders it, so the model reaches a
         # boundary knowing how close it is instead of having to ask.
@@ -4553,6 +4599,36 @@ class ChatSession:
             trigger_tokens=trigger,
         )
         return conversation_tokens >= trigger
+
+    def _tools_tokens(self) -> int:
+        """What the tools array costs this turn, priced the way the provider
+        prices it.
+
+        Cached for the life of a CONVERSATION, like the head, and for the same
+        reason: CC-19 froze the array so a tier change no longer moves it
+        mid-conversation, and rebuilding it after every turn would pay to
+        serialise a hundred and fifty schemas to answer a question whose answer
+        did not change. `refresh_head` drops it, so a boundary reads it again.
+
+        Zero for a session with no registry, which is a sub-agent or a test
+        double: nothing is sent, so nothing is charged.
+
+        Never raises. This sits inside the fold decision, and a conversation
+        that cannot size its tools must still be able to decide it is full.
+        """
+        if self._tools_tokens_cached is not None:
+            return self._tools_tokens_cached
+        size = 0
+        try:
+            from tesseract.brain.request_size import measure_tools, wire_entries_for
+
+            size = measure_tools(
+                wire_entries_for(self.registry, set(self._enabled_extended_tools))
+            ).tokens
+        except Exception:
+            log.warning("could not size the tools array for the boundary", exc_info=True)
+        self._tools_tokens_cached = size
+        return size
 
     def _conversation_split(
         self, msgs: list[dict[str, Any]]
@@ -4633,12 +4709,22 @@ class ChatSession:
             [{"role": "system", "content": str(prompt)}]
         )
 
-    def _boundary_trigger_tokens(self, ctx: int, system_tokens: int) -> float:
+    def _boundary_trigger_tokens(
+        self, ctx: int, system_tokens: int, tools_tokens: int = 0
+    ) -> float:
         """How large the conversation may get before a boundary is due.
 
-        `compact_threshold` of the window, less the system prompt, because the
-        threshold is a statement about the whole payload while only the
-        conversation is what a boundary clears.
+        `compact_threshold` of the window, less everything a boundary cannot
+        clear, because the threshold is a statement about the whole payload
+        while only the conversation is what a boundary clears.
+
+        **The tools array is part of what it cannot clear**, and it was missing
+        from both terms until CC-25. The head was subtracted and the schemas
+        were not, so a ratio of 0.25 fired at a real request of 26.0% of a
+        1,050,000-token window. Small there, and 5 points on a 200,000-token
+        model, which is where a small-context member would land. It is counted
+        structurally rather than by characters: `brain/request_size.py` says
+        why a character count cannot measure that array at all.
 
         **Floored at the system prompt's own size, and that floor is derived
         rather than chosen.** Subtracting alone goes NEGATIVE the moment the
@@ -4662,9 +4748,10 @@ class ChatSession:
         million tokens, and reachable the day a small-context model is wired
         in, which is where this project says it is going.
         """
+        fixed = system_tokens + tools_tokens
         return max(
-            ctx * self.compact_threshold - system_tokens,
-            min(system_tokens, ctx - system_tokens),
+            ctx * self.compact_threshold - fixed,
+            min(fixed, ctx - fixed),
         )
 
     def turn_count(self) -> int:

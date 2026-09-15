@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tesseract.brain import prompt as prompt_module
+from tesseract.brain import request_size
 from tesseract.brain.prompt_content import (
     SOURCE_ROLLUPS_TO_LOAD,
     TOPIC_HUBS_TO_LOAD,
@@ -48,16 +49,18 @@ from tesseract.brain.prompt_content import (
 
 logger = logging.getLogger(__name__)
 
-#: Chars per token. An ESTIMATE, and deliberately the same one every adapter's
-#: `count_tokens` uses — Anthropic, OpenAI, Gemini and the CLI adapters all
-#: divide by four, and that estimate is what decides when a session compacts.
-#: A more accurate count here would be a readout disagreeing with the mechanism
-#: it describes. The real figure only exists after a round trip, in
+#: Prose to tokens, through the runtime's one measured divisor.
+#:
+#: There was a constant here, four, and a comment saying it was "deliberately
+#: the same one every adapter's `count_tokens` uses ... all divide by four".
+#: They do not: every adapter calls `_estimate`, which divides by 3.316, a
+#: figure regressed over real history. So the readout that existed to describe
+#: the mechanism was the one thing disagreeing with it, by 21 percent, on the
+#: number that decides when a conversation is wrapped up.
+#:
+#: The real figure only exists after a round trip, in
 #: `StreamChunk.raw["usage"]`.
-CHARS_PER_TOKEN = 4
-
-def tokens(chars: int) -> int:
-    return chars // CHARS_PER_TOKEN
+tokens = request_size.tokens_from_chars
 
 
 @dataclass(frozen=True)
@@ -105,7 +108,16 @@ def payload_breakdown(
     )
     built = prompt_module.build_sections(ctx)
     assembled = prompt_module.join_sections(built)
-    schema_chars = prompt_module._core_schema_chars(ctx.registry)
+    # The tools array, priced the way the provider prices it. A character
+    # count read it five times high once namespaces landed: a namespace
+    # carries every member's schema in the JSON and the provider charges for
+    # the header alone, so the relationship between the bytes and the bill is
+    # not a ratio at all. `brain/request_size.py` owns that, and the panel
+    # reads it rather than counting a second way.
+    tools = request_size.measure_tools(
+        request_size.wire_entries_for(ctx.registry, set())
+    )
+    schema_chars = tools.wire_chars
 
     sections = [
         SectionCost(
@@ -132,13 +144,15 @@ def payload_breakdown(
             name="schemas",
             label="tool schemas",
             description=(
-                f"The full callable contract for each of the {tool_count} tools "
-                "in the working set: every argument, its type, and when to use "
-                "it. Sent beside the prompt, not inside it."
+                f"The callable contract for each of the {tool_count} tools in "
+                "the working set in full, and a one line heading for each "
+                f"group of the {tools.deferred} the provider can fetch for "
+                "itself. Sent beside the prompt, not inside it, and the "
+                "headings are why this costs a fraction of what it weighs."
             ),
             group="tools",
             chars=schema_chars,
-            tokens=tokens(schema_chars),
+            tokens=tools.tokens,
             document=None,
             # The working set decides WHICH tools are described, so it decides
             # this row's size. Settings -> Tools decides what each may do,
@@ -159,9 +173,16 @@ def payload_breakdown(
     return {
         "surface": channel_name or "cockpit",
         "total_chars": total_chars,
-        "total_tokens": tokens(total_chars),
+        # Not `tokens(total_chars)`. The two halves are priced differently
+        # because only one of them is prose, and adding the characters first
+        # throws that away.
+        "total_tokens": tokens(len(assembled)) + tools.tokens,
         "prose_chars": len(assembled),
         "schema_chars": schema_chars,
+        "schema_tokens": tools.tokens,
+        "loaded_tools": tools.loaded,
+        "namespaces": tools.namespaces,
+        "deferred_tools": tools.deferred,
         "core_tools": tool_count,
         "groups": [
             {

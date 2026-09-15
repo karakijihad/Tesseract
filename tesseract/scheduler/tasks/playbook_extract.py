@@ -462,16 +462,15 @@ def _tool_sequence(turns: list[dict[str, Any]]) -> list[str]:
 
 
 def _existing_playbooks(skills_dir: Path) -> list[tuple[Path, str, list[str]]]:
-    """Every playbook, active and pending, with its tool sequence."""
+    """Every skill, active and pending, with its tool sequence."""
     found: list[tuple[Path, str, list[str]]] = []
     for entry in load_skills(skills_dir):
-        if entry.is_playbook:
-            found.append((skills_dir / entry.dirname, entry.name, _steps_tools(entry)))
+        found.append((skills_dir / entry.dirname, entry.name, _steps_tools(entry)))
     pending = skills_dir / SKILL_PENDING_DIRNAME
     if pending.is_dir():
         for folder in sorted(p for p in pending.iterdir() if p.is_dir()):
             entry = load_skill_folder(folder)
-            if entry is not None and entry.is_playbook:
+            if entry is not None:
                 found.append((folder, entry.name, _steps_tools(entry)))
     return found
 

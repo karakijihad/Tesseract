@@ -82,6 +82,41 @@ def _function_entry(t: dict[str, Any], *, defer: bool) -> dict[str, Any]:
     return entry
 
 
+def build_tools_array(projected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The exact `tools` array this adapter puts on the wire.
+
+    Named rather than inline in `stream` because a second reader needs it.
+    What a request costs is measured from the array that is actually sent
+    (`brain/request_size.py`), and an array rebuilt a second way for the
+    measurement would be free to disagree with the one the provider charges
+    for. That disagreement is what this whole phase exists to end: a character
+    count over the same structure reads it five times high.
+
+    `projected` is `ModelAdapter.project_tools`'s output, so the deferral
+    flags are still on it and the working-set filtering has already happened.
+    """
+    translated: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    for t in projected:
+        if t.get("defer_loading"):
+            deferred.append(t)
+        else:
+            translated.append(_function_entry(t, defer=False))
+    # Deferred tools travel namespaced by taxonomy group, not as flat entries
+    # wearing `defer_loading` — seeing every name up front costs 26,659 tokens
+    # for 158 tools, and namespacing without naming the members inside gets the
+    # model to the right tool on 1 of 5 tasks. Naming them in the namespace
+    # description is what gets back to today's accuracy at a third of the cost.
+    # See `_namespace_entries`.
+    translated.extend(_namespace_entries(deferred))
+    # The provider's search rides along only when there is something to search
+    # for. `project_tools` has already guaranteed that a payload which would
+    # defer everything defers nothing instead.
+    if deferred:
+        translated.append(dict(_TOOL_SEARCH_TOOL))
+    return translated
+
+
 def _namespace_entries(deferred: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deferred tools, bucketed by `Tool.group` into `namespace` entries.
 
@@ -881,27 +916,7 @@ class OpenAIAdapter(ModelAdapter):
                     kwargs["prompt_cache_key"] = cache_key
         projected = self.project_tools(tools)
         if projected:
-            translated: list[dict[str, Any]] = []
-            deferred: list[dict[str, Any]] = []
-            for t in projected:
-                if t.get("defer_loading"):
-                    deferred.append(t)
-                else:
-                    translated.append(_function_entry(t, defer=False))
-            # Deferred tools travel namespaced by taxonomy group, not as flat
-            # entries wearing `defer_loading` — seeing every name up front
-            # costs 26,659 tokens for 158 tools, and namespacing without
-            # naming the members inside gets the model to the right tool on
-            # 1 of 5 tasks. Naming them in the namespace description is what
-            # gets back to today's accuracy at a third of the cost. See
-            # `_namespace_entries`.
-            translated.extend(_namespace_entries(deferred))
-            # The provider's search rides along only when there is something
-            # to search for. `project_tools` has already guaranteed that a
-            # payload which would defer everything defers nothing instead.
-            if deferred:
-                translated.append(dict(_TOOL_SEARCH_TOOL))
-            kwargs["tools"] = translated
+            kwargs["tools"] = build_tools_array(projected)
         if opts.reasoning_effort:
             kwargs["reasoning"] = {"effort": opts.reasoning_effort}
             # Only ask for encrypted reasoning when the model will actually generate some.

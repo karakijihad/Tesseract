@@ -4,10 +4,10 @@ The same move `check_tool_contract` makes for tools and `agents/contract.py`
 makes for cards: a thing the runtime runs on its own declares what it is, and
 the declaration is checked at boot rather than discovered when it fires.
 
-A playbook is a skill that declares the procedure contract in its frontmatter
-(`brain/skills.py::PLAYBOOK_KEYS`). Declaring any one of those keys is
-declaring all of them, so a half-written playbook is a list of gaps and never
-a skill that quietly loads as prose.
+Every skill declares the procedure contract in its frontmatter
+(`brain/skills.py::CONTRACT_KEYS`), whether it wrote any of it or not
+(ruling 12). A half-written, or entirely unwritten, contract is a list of
+gaps and never a skill that quietly loads as prose.
 
 **Reported, never refused, and the reason is where skills live.** Agent cards
 have two roots, the app's and the operator's, and a shipped card that cannot
@@ -70,14 +70,12 @@ def gaps_for_skill(
     *,
     tool_names: frozenset[str] | None = None,
 ) -> list[PlaybookGap]:
-    """Every gap in one ALREADY-LOADED skill. Empty for a plain skill.
+    """Every gap in one ALREADY-LOADED skill.
 
     `tool_names` is the live registry, or None for "no answer": the prompt
     builder has no registry in hand, and a step tool it cannot check is not a
     step tool that is missing.
     """
-    if not entry.is_playbook:
-        return []
     gaps: list[PlaybookGap] = []
 
     for key in sorted(CONTRACT_KEYS):

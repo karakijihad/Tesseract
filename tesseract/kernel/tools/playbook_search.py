@@ -109,7 +109,7 @@ class PlaybookSearchTool(Tool):
 
         # Off the loop: one directory scan plus a YAML parse per playbook.
         entries = await asyncio.to_thread(load_skills, self._skills_dir)
-        playbooks = [e for e in entries if e.is_playbook and e.status != "retired"]
+        playbooks = [e for e in entries if e.status != "retired"]
         carried = load_carried_names(self._skills_dir / CARRIED_FILENAME)
         gaps = blocking_gaps(playbooks)
 

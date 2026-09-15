@@ -62,9 +62,7 @@ def records(skills_dir: Path, *, window_days: int) -> list[dict[str, Any]]:
     is the row this exists to show, and a reader that returns only what the
     usage log holds cannot show one.
     """
-    entries = [
-        e for e in load_skills(skills_dir) if e.is_playbook and e.status != "retired"
-    ]
+    entries = [e for e in load_skills(skills_dir) if e.status != "retired"]
     carried = load_carried_names(skills_dir / CARRIED_FILENAME)
     by_name = measure_all(
         [e.name for e in entries], window_days=window_days, with_cost=True

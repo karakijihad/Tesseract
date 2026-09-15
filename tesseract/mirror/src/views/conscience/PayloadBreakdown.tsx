@@ -47,6 +47,16 @@ export function PayloadBreakdown({
         <p className="payload__total-chars t-meta">
           {base.total_chars.toLocaleString()} characters
         </p>
+        {base.namespaces > 0 && (
+          <p className="payload__total-chars t-meta">
+            {base.loaded_tools.toLocaleString()} tools are described in full and{' '}
+            {base.deferred_tools.toLocaleString()} sit behind{' '}
+            {base.namespaces.toLocaleString()} group headings the model can ask
+            to open. That is why the tool half costs{' '}
+            {base.schema_tokens.toLocaleString()} tokens and weighs{' '}
+            {base.schema_chars.toLocaleString()} characters.
+          </p>
+        )}
       </header>
 
       <Formula reading={base} />

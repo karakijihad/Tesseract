@@ -261,7 +261,7 @@ def _playbook_reading(window_days: int, now: datetime) -> list[dict[str, Any]]:
     live = sorted(
         e.name
         for e in load_skills(skills_dir())
-        if e.is_playbook and e.status != "retired"
+        if e.status != "retired"
     )
     if not live:
         return []

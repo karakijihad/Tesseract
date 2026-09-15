@@ -25,13 +25,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Iterable
 
+from tesseract.kernel.adapters._estimate import CHARS_PER_TOKEN as _CHARS_PER_TOKEN
 from tesseract.orchestrator.atlas.model import PRECEDENCE, Edge, Node, NodeKind, Provenance
 from tesseract.orchestrator.atlas.store import Atlas
 
-# Rough characters-per-token. Deliberately pessimistic: a budget that is
-# occasionally under-spent costs a caller nothing, and one that is over-spent
-# costs them a truncated turn they cannot see coming.
-CHARS_PER_TOKEN = 4
+# Characters per token, from the runtime's one measured divisor rather than a
+# constant of its own. This said four and called itself "deliberately
+# pessimistic", which had the direction backwards: a larger divisor estimates
+# FEWER tokens for the same text, so it over-spent the budget it was meant to
+# protect. 3.316 estimates more, which is what the comment intended.
+CHARS_PER_TOKEN = _CHARS_PER_TOKEN
 
 _RANK = {provenance: index for index, provenance in enumerate(PRECEDENCE)}
 
@@ -76,7 +79,7 @@ class Hit:
         text = self.node.title + self.node.locator + "".join(
             c.as_line() for c in self.citations
         )
-        return max(1, len(text) // CHARS_PER_TOKEN)
+        return max(1, int(len(text) / CHARS_PER_TOKEN))
 
     def as_json(self) -> dict:
         return {

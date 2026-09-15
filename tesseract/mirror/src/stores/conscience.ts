@@ -257,7 +257,8 @@ export interface PayloadSection {
   description: string;
   group: 'instructions' | 'tools' | 'memory';
   chars: number;
-  /** An estimate at `chars_per_token` — the one the runtime compacts by. */
+  /** An estimate at `chars_per_token`, the one the runtime compacts by.
+ *  Prose only: the tools row is counted structurally instead. */
   tokens: number;
   /** The workspace file this section inlines whole, if it is one. */
   document: string | null;
@@ -291,7 +292,19 @@ export interface PayloadReading {
   total_chars: number;
   total_tokens: number;
   prose_chars: number;
+  /** What the tools array weighs on the wire. Not what it costs: a namespace
+   *  carries every member's schema in the JSON and the provider charges for
+   *  the header alone. */
   schema_chars: number;
+  /** What the tools array actually costs, counted structurally. The gap
+   *  between this and `schema_chars` is the saving namespacing bought. */
+  schema_tokens: number;
+  /** Schemas sent in full. */
+  loaded_tools: number;
+  /** Group headings standing in for the rest. */
+  namespaces: number;
+  /** Schemas the provider can fetch for itself, charged nothing up front. */
+  deferred_tools: number;
   core_tools: number;
   groups: PayloadGroup[];
   sections: PayloadSection[];

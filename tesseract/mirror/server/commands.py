@@ -470,7 +470,17 @@ async def cmd_reset(
 ) -> None:
     """Reset the conversation.
 
-    Two modes (operator picks via the frontend confirm dialog):
+    Three modes, and the same three a channel offers. The operator picks via
+    the frontend confirm dialog:
+
+    - ``arg == "handoff"`` — the work goes on somewhere. The conversation is
+      asked to wrap up first, and the boundary at the end of that turn does
+      the clearing, the recording and the handing over, exactly as it does for
+      a boundary the agent reached itself. It clears IN PLACE rather than
+      opening a new chat, and that is the point: handing over means the work
+      continues here, same thread, with the package in front of it. A
+      conversation that will not answer falls through to ``reflect`` below,
+      because the operator asked for this one to be gone.
     - ``arg in (None, "reflect")`` — keep the conversation, start a fresh one.
       The active chat is written to its own record, archived, and a new chat
       opens in its place; reflection runs in the background on a snapshot.
@@ -487,6 +497,26 @@ async def cmd_reset(
     # `.get`, not `[...]`: `clear` is the operator asking for zero side effects
     # and must not depend on chat infra having finished booting.
     model = getattr(app.get("adapter_options"), "model", "") or ""
+
+    if arg_norm == "handoff":
+        from tesseract.mirror.server.after_turn import wrap_up_first
+        from tesseract.mirror.server.turn_runner import send_and_await_turn
+
+        chat_id = session.active_chat_id
+        wrapped_up = await wrap_up_first(
+            session.chat_session,
+            f"cockpit/{chat_id}",
+            lambda text, origin: send_and_await_turn(
+                app, session, chat_id, text, runtime_origin=origin,
+            ),
+        )
+        if wrapped_up:
+            return
+        log.info(
+            "reset: %s could not wrap up, so it is archived instead and "
+            "nothing is carried over",
+            chat_id,
+        )
 
     if arg_norm == "clear":
         # The wipe itself is shared with the agent's own boundary, which ends

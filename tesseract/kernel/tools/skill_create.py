@@ -1,21 +1,23 @@
 """skill_create tool — draft a new markdown skill under workspace/skills/.
 
-Mirror of `agent_create`. The assistant (or a delegate) drafts a prose
-skill for a repeated chore, or a PLAYBOOK: a skill that also declares the
-procedure contract (`brain/skills.py::PLAYBOOK_KEYS`), which is how a way of
-doing something that worked is written down so the next time it is asked for
-the steps are already known. Attended sessions get the posture
+Mirror of `agent_create`. The assistant (or a delegate) drafts a skill for a
+repeated chore or a way of doing something that worked, declaring the
+procedure contract (`brain/skills.py::CONTRACT_KEYS`): the shape of problem
+it answers, the steps and the tool each one uses, what done looks like. A
+field left unset is a gap `playbook_contract.gaps_for_skill` reports, never a
+reason the write is refused (ruling 12: one kind, and a file that declares
+none of the contract still loads). Attended sessions get the posture
 `permissions.yaml` sets for the mode (`ask` where the operator keeps the
 decision, `auto` where they gave it away); unattended, the executor's
 quarantine-write carve-out (`headless_quarantine_write` ClassVar, honored by
 `permissions/decide.py` from the CLASS only) lets the call proceed because the
 only write target is the uninvokable quarantine below.
 
-**A playbook is refused at the door, not after the operator has read it.**
+**Every skill is refused at the door, not after the operator has read it.**
 The contract is checked before the write (`playbook_contract.gaps_for_skill`
 with the live registry): a step naming a tool the runtime does not have or
-one the playbook itself forbids, a status outside the vocabulary. The version
-gap cannot fire here any more, because a created playbook is stamped `1` by
+one the skill itself forbids, a status outside the vocabulary. The version
+gap cannot fire here any more, because a created skill is stamped `1` by
 `render_skill_markdown` rather than taking one from the caller. And any field
 naming a credential-bearing path or a
 path outside the home tree is refused outright, because a generated
@@ -102,27 +104,21 @@ class SkillCreateInput(BaseModel):
     version: str = Field(
         default="0.1",
         description=(
-            "Interop field for a plain skill, free form. A playbook ignores "
-            "it: a new playbook is version 1 and the runtime writes it."
+            "Ignored: a new skill is version 1 and the runtime writes it."
         ),
     )
     license: str | None = Field(default=None)
     allowed_tools: list[str] | None = Field(
         default=None,
-        description=(
-            "Agent-Skills `allowed-tools`. For a playbook, every tool a step "
-            "uses must be listed here."
-        ),
+        description="Agent-Skills `allowed-tools`. Every tool a step uses must be listed here.",
     )
-    # The playbook half. Giving `trigger` (or any of these) makes the skill a
-    # playbook, and then the whole contract is owed and checked before the
-    # write. A plain skill leaves them all unset.
+    # The procedure contract. A field left unset here is a gap
+    # `playbook_contract` reports, not a reason the write is refused.
     trigger: str | None = Field(
         default=None,
         description=(
             "The shape of problem this answers, in the operator's words, e.g. "
-            "'a brief on a topic, sent to the phone'. Setting it makes this a "
-            "playbook and every field below is then required."
+            "'a brief on a topic, sent to the phone'."
         ),
     )
     use_when: str | None = Field(default=None, description="When to reach for it.")
@@ -415,60 +411,51 @@ class SkillCreateTool(Tool):
 
 def render_skill_markdown(inp: SkillCreateInput) -> str:
     """Render the full SKILL.md content. Frontmatter aligned to the Agent
-    Skills standard (name/description required; version/license/allowed-tools
-    optional). Pure function."""
+    Skills standard (name/description required) plus the procedure contract,
+    written whole (ruling 12): every contract key is written, empty where the
+    author gave nothing, so the contract reports "declared and empty" rather
+    than "missing" and the file reads as a whole declaration. Pure function.
+    """
     fm: dict[str, Any] = {"name": inp.name, "description": inp.description}
-    playbook = _is_playbook(inp)
-    if playbook:
-        # A playbook's version is an ordering key, so it is the runtime's and
-        # not the author's: `keep_predecessor` archives under it and refuses
-        # anything that does not sort above the live one. This tool CREATES,
-        # and a created playbook is the first revision. Reading `inp.version`
-        # here coerced a semantic one to "1" without saying so, which put a
-        # revision of a v3 playbook below its own predecessor.
-        fm["version"] = "1"
-        fm["status"] = "draft"
-    elif inp.version:
-        fm["version"] = inp.version
+    # A skill's version is an ordering key, so it is the runtime's and not
+    # the author's: `keep_predecessor` archives under it and refuses anything
+    # that does not sort above the live one. This tool CREATES, and a created
+    # skill is the first revision. Reading `inp.version` here coerced a
+    # semantic one to "1" without saying so, which put a revision of a v3
+    # skill below its own predecessor.
+    fm["version"] = "1"
+    fm["status"] = "draft"
     if inp.license:
         fm["license"] = inp.license
-    if inp.allowed_tools or playbook:
-        fm["allowed-tools"] = list(inp.allowed_tools or [])
-    if playbook:
-        # Every contract key is written, empty where the author gave nothing,
-        # so the contract reports "declared and empty" rather than "missing"
-        # and the file reads as a whole declaration.
-        fm["trigger"] = inp.trigger or ""
-        fm["use_when"] = inp.use_when or ""
-        fm["not_when"] = inp.not_when or ""
-        fm["preconditions"] = list(inp.preconditions or [])
+    fm["allowed-tools"] = list(inp.allowed_tools or [])
+    fm["trigger"] = inp.trigger or ""
+    fm["use_when"] = inp.use_when or ""
+    fm["not_when"] = inp.not_when or ""
+    fm["preconditions"] = list(inp.preconditions or [])
+    # `steps` is the one contract key whose empty declaration BLOCKS the
+    # write outright (`playbook_contract.gaps_for_skill`: "names nothing to
+    # do"), so, unlike every other field above and below, it is written only
+    # when the caller actually gave steps. A caller who gives none is a skill
+    # with nothing to run yet, which is honestly "not declared", not "declared
+    # and refused".
+    if inp.steps:
         fm["steps"] = [
             {"do": step.do, **({"tool": step.tool} if step.tool else {})}
-            for step in (inp.steps or [])
+            for step in inp.steps
         ]
-        fm["forbidden-tools"] = list(inp.forbidden_tools or [])
-        fm["expected_result"] = inp.expected_result or ""
-        fm["failure_modes"] = list(inp.failure_modes or [])
-        fm["evidence"] = list(inp.evidence or [])
-        fm["confidence"] = inp.confidence
+    fm["forbidden-tools"] = list(inp.forbidden_tools or [])
+    fm["expected_result"] = inp.expected_result or ""
+    fm["failure_modes"] = list(inp.failure_modes or [])
+    fm["evidence"] = list(inp.evidence or [])
+    fm["confidence"] = inp.confidence
     front = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
     return f"---\n{front}\n---\n\n{inp.instructions.strip()}\n"
 
 
-def _is_playbook(inp: SkillCreateInput) -> bool:
-    return any(
-        getattr(inp, key) is not None
-        for key in (
-            "trigger", "use_when", "not_when", "preconditions", "steps",
-            "forbidden_tools", "expected_result", "failure_modes", "evidence",
-            "confidence",
-        )
-    )
-
-
 def refuse_playbook(rendered: str, name: str, tool_names: frozenset[str] | None) -> str | None:
-    """Why a rendered playbook may not be written, or None. A plain skill is
-    never refused here."""
+    """Why a rendered SKILL.md may not be written, or None. Runs on every
+    skill (ruling 12): the blocking-gap check and the credential/path scan
+    below apply whether or not the file declared the contract."""
     from tesseract.brain.playbook_contract import gaps_for_skill
     from tesseract.kernel.tools._path_door import refuse_paths
     from tesseract.paths import home_dir
@@ -486,7 +473,7 @@ def refuse_playbook(rendered: str, name: str, tool_names: frozenset[str] | None)
             tmp_root.rmdir()
         except OSError:
             pass
-    if entry is None or not entry.is_playbook:
+    if entry is None:
         return None
 
     blocking = [g for g in gaps_for_skill(entry, tool_names=tool_names) if g.blocking]
