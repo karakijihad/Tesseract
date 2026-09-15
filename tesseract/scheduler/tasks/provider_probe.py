@@ -156,6 +156,8 @@ class ProviderProbeJob(BaseJob):
         # this payload is written verbatim into `runs.jsonl`, which the
         # watchman reads and the Schedule surface renders. The sentence stays
         # in the health log, where SECURITY.md says it stays.
+        density = await _verify_schema_density(ctx, targets, results)
+
         failures = [_failure_row(r) for r in results if not r.ok]
         # JobResult.ok is unconditionally True when probes ran. Drift in
         # a single probe is *expected output* — the job reached every
@@ -177,9 +179,61 @@ class ProviderProbeJob(BaseJob):
                 "skipped": skipped,
                 "failures": failures,
                 "ok": not failures,
+                "schema_density": density,
             },
             duration_ms=(time.monotonic() - t0) * 1000.0,
         )
+
+
+async def _verify_schema_density(
+    ctx: JobContext, targets: list["ProbeTarget"], results: list[ProbeResult]
+) -> list[dict[str, Any]]:
+    """Keep each `api` chat model's schema figure true (`brain/schema_density.py`).
+
+    Only on a planned pass, for the reason the CLI live check is: the failover
+    row fires during an incident and can fire repeatedly. Only for a model that
+    just answered its probe, because a reading from one that did not is two
+    more failed calls. Never raises: the health rows above are the job's real
+    output, and a measurement that broke must not take them with it.
+    """
+    if ctx.trigger_source not in _LIVE_CHECK_TRIGGERS:
+        return []
+    app = ctx.app
+    registry = app.get("tool_registry") if app is not None and hasattr(app, "get") else None
+    if registry is None:
+        return []
+    answering = {r.ref for r in results if r.ok}
+    chosen = [
+        (t.ref, t.roles[0])
+        for t in targets
+        if t.tier == "api" and t.kind == "chat" and t.ref in answering
+    ]
+    if not chosen:
+        return []
+    try:
+        from tesseract.brain import schema_density
+        from tesseract.config.runtime_limits import (
+            default_runtime_config_path,
+            load_schema_density_recheck_days,
+            load_schema_density_tolerance,
+        )
+        from tesseract.paths import config_dir
+        from tesseract.scheduler.role_chain import build_entry_for_ref
+
+        runtime = default_runtime_config_path()
+        return await schema_density.verify(
+            chosen,
+            registry=registry,
+            entry_builder=build_entry_for_ref,
+            cost_ledger=ctx.cost_ledger,
+            tolerance=load_schema_density_tolerance(runtime),
+            recheck_days=load_schema_density_recheck_days(runtime),
+            catalog=config_dir() / "providers.yaml",
+            publish=lambda payload: publish_to_bus(AgendaSource.PROVIDER_WATCH, payload),
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("provider_probe: the schema figure check failed")
+        return []
 
 
 def _failure_row(result: ProbeResult) -> dict[str, Any]:
@@ -377,6 +431,7 @@ def _resolve_embed_fn(ctx: JobContext, bundle: ConfigBundle) -> Any:
     # never hit this branch because they always inject an ``embed_fn``
     # directly into ``EmbeddingRoleProbe``.
     try:
+        from tesseract.config.loader import resolve_input_cut_chars
         from tesseract.memory.embeddings import EmbeddingIndex
         from tesseract.paths import TESSERACT_HOME
 
@@ -398,6 +453,9 @@ def _resolve_embed_fn(ctx: JobContext, bundle: ConfigBundle) -> Any:
             dimensions=int(emb.model.fields.get("dimensions") or 0),
             timeout_seconds=conn.timeout_seconds,
             max_retries=conn.max_retries,
+            input_cut_chars=resolve_input_cut_chars(
+                emb.model.fields, where=f"providers.yaml::{emb.ref}"
+            ),
         )
         return index.embed_text
     except Exception:  # noqa: BLE001

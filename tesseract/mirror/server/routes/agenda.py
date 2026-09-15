@@ -13,6 +13,8 @@ Contract:
 - ``POST /api/agenda/{id}/approve``      — mark approval gate(s) fulfilled
                                             and bump propose → autonomous
                                             for one shot (operator-session-gated).
+- ``POST /api/agenda/{id}/verdict``      — one key on a finished task: good,
+                                            bad or unused (operator-session-gated).
 
 GET is anonymous-readable (Mirror polls without session context).
 Mutating endpoints require an operator session matching the
@@ -24,6 +26,7 @@ live ``ask_fn`` (i.e. an actual operator-attended chat session). Anonymous
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -53,6 +56,7 @@ from tesseract.orchestrator.autonomy.models import (
     RiskClass,
     mint_agenda_id,
 )
+from tesseract.orchestrator.autonomy import verdicts
 
 log = logging.getLogger(__name__)
 
@@ -397,6 +401,50 @@ async def approve_item(request: web.Request) -> web.Response:
     )
 
 
+async def record_task_verdict(request: web.Request) -> web.Response:
+    """POST /api/agenda/{id}/verdict — one key on a finished task.
+
+    Body: ``{session_id, verdict}`` where ``verdict`` is ``good``, ``bad`` or
+    ``unused``. The row need not still be in the active store: a finished
+    task lives in the closed history, which is what ``record_verdict`` reads.
+    """
+    body, err = await _authed_body(request)
+    if err is not None:
+        return err
+
+    task_id = request.match_info["id"]
+    verdict = body.get("verdict")
+    if not isinstance(verdict, str) or not verdict:
+        return web.json_response({"error": "a key is required"}, status=400)
+
+    # Off the loop: it reads the kept-forever history to find the task.
+    outcome = await asyncio.to_thread(
+        verdicts.record_verdict, task_id, verdict, by="mirror"
+    )
+    if outcome == "recorded":
+        return web.json_response({"task": task_id, "verdict": verdict})
+    if outcome == "invalid":
+        return web.json_response(
+            {"error": "that is not one of the three keys this can take"}, status=400,
+        )
+    if outcome == "unknown_task":
+        return web.json_response(
+            {"error": "there is no finished task with that id"},
+            status=404,
+        )
+    if outcome == "not_a_task":
+        return web.json_response(
+            {"error": "this did not come from something asked for, so it cannot take a key"},
+            status=409,
+        )
+    if outcome == "never_finished":
+        return web.json_response(
+            {"error": "that task stopped before it finished, so there is no work to mark"},
+            status=409,
+        )
+    return web.json_response({"error": "the key could not be saved"}, status=500)
+
+
 # -- comment threads -----------------------------------------------------
 
 
@@ -644,6 +692,7 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/agenda/{id}", patch_item)
     app.router.add_post("/api/agenda/{id}/cancel", cancel_item)
     app.router.add_post("/api/agenda/{id}/approve", approve_item)
+    app.router.add_post("/api/agenda/{id}/verdict", record_task_verdict)
     app.router.add_post("/api/agenda/{id}/resume", resume_item)
     app.router.add_get("/api/agenda/{id}/comments", list_item_comments)
     app.router.add_post("/api/agenda/{id}/comments", post_item_comment)
@@ -661,6 +710,7 @@ __all__ = [
     "list_source_pauses",
     "patch_item",
     "post_item_comment",
+    "record_task_verdict",
     "register",
     "resume_item",
     "unpause_source",

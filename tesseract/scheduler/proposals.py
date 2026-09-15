@@ -71,7 +71,7 @@ class ProposalKind:
 KINDS: tuple[ProposalKind, ...] = (
     ProposalKind(
         key="carry_more",
-        summary="Carry a tool or a playbook that every turn keeps looking up first.",
+        summary="Carry a tool that every turn keeps looking up first.",
         why=(
             "Reaching for something through a search costs a call before the "
             "work starts. Without this, a tool used constantly stays off the "
@@ -83,7 +83,7 @@ KINDS: tuple[ProposalKind, ...] = (
     ),
     ProposalKind(
         key="carry_less",
-        summary="Stop carrying a tool or a playbook nothing has reached for.",
+        summary="Stop carrying a tool nothing has reached for.",
         why=(
             "What a turn carries is roughly half of what it costs before you "
             "have typed anything. Without this, the list only ever grows."

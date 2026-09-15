@@ -57,6 +57,7 @@ NotificationCategory = Literal[
     # runtime and would have cost a type check.
     "runtime_repaired",
     "awaiting_operator",
+    "task_closed",
     "recovery_summary",
     "governor_pause",
     "crash_storm_latched",

@@ -257,13 +257,19 @@ nothing outside this machine is never set aside, so a mistyped path can never
 cost you the tool that reads files.
 
 **The things waiting for your approval can be answered wherever you are, and
-the assistant cannot answer them for you.** Drafted agents and skills, proposed
-changes to the assistant's own instructions, memory merges, catalog edits,
-proposed changes to a daily spending limit and files waiting to be filed all
-wait in one place, and answering one is itself a tool call at **ask**. So the assistant can bring one to you and say what it
-would do, on your phone as readily as in the app, and the confirmation is
-always a prompt you answer. It cannot approve its own proposal, because making
-the decision and being asked for it are the same step.
+the assistant cannot answer them for you.** A drafted agent, a skill the
+assistant has just written, proposed changes to the assistant's own
+instructions, memory merges, catalog edits, proposed changes to a daily
+spending limit and files waiting to be filed all wait in one place under the
+shipped default, and answering one is itself a tool call at **ask**. So the
+assistant can bring one to you and say what it would do, on your phone as
+readily as in the app, and the confirmation is always a prompt you answer. It
+cannot approve its own proposal, because making the decision and being asked
+for it are the same step. Under `free`, the mode for unattended operation, a
+newly written skill is the one exception worth naming here: it does not wait.
+It goes live on its own, active from that moment rather than sitting in some
+stage before it, and the card that would have asked you is filed already
+answered, the same as any other proposal `free` applies without you.
 
 `tesseract/config/permissions.yaml` is the authority. The shipped default is
 `security_mode: max`, under which writes, outbound calls and subprocess
@@ -297,6 +303,13 @@ of. What it will not open is `_shipping/`, which decides what every user
 receives rather than saying anything about your install. It reads markdown, it
 reads your state folder and never the program folder, and a path that tries to
 climb out of the workspace is refused.
+
+**`workspace/skills/` can be read but never written, in any mode.**
+`file_write`, `file_copy` and `file_move` are all refused there too, the same
+as the six documents above, because a file written there directly would skip
+the checks a skill has to pass. A skill is written only through
+`skill_create` and changed only through `skill_refine`; both scan it, check
+its contract and file a card before anything lands.
 
 **What happens to a proposal is the one thing a mode decides here.** Under the
 shipped default it waits for you: the change is filed in the workspace inbox
@@ -346,12 +359,17 @@ half the runtime obeying your setting and half unable to. `workspace_cards`
 is the same statement keyed by the kind of card, with the same rule that a
 kind you name always waits for you.
 
-A fresh install holds four, and each is a thing a runtime should not decide on
+A fresh install holds six, and each is a thing a runtime should not decide on
 your behalf. Two are questions the assistant asked YOU, where approving it
 unattended answers with nothing. One is a change to the configuration that
-says how the app is actually wired. The last is a knowledge-base paragraph you
-and the refresher both edited, where approving on its own picks one wording
-over the other and the loser is gone.
+says how the app is actually wired. One is a knowledge-base paragraph you and
+the refresher both edited, where approving on its own picks one wording over
+the other and the loser is gone. One rewrites what the assistant has been told
+about how to work, read off your own transcripts, where letting the mode apply
+it unattended would be a standing instruction changing while nobody is
+looking. And one is the verdict on a skill: whether it should stop being used
+is decided here, and nowhere in the assistant's own tools, precisely so the
+mode cannot apply it on its own account.
 
 `auto` here means the runtime approves the card through the same code path
 your own Approve button uses, with the same side effects, and the card is
@@ -526,25 +544,32 @@ These rules sit underneath the policy and are not reachable from it:
   them.
 
   Every tool posture, with no exception, is `permissions.yaml`'s to decide.
-  That includes drafting and activating an agent, and drafting, activating
-  and revising a skill or playbook: they ask under the shipped default and
-  run on their own under `free`. Whatever the mode, a playbook that could
-  not run is refused before it is written: a step naming a tool the runtime
-  does not have or one the playbook itself forbids, a credential-bearing
-  path, or a path outside the home tree or one that cannot be shown to be
-  inside it (a network share, a variable, a tilde, a drive-relative path).
-  A revision of a live playbook goes through the same check.
+  That includes drafting and activating an agent, and creating and changing a
+  skill: `skill_create` and `skill_refine` ask under the shipped
+  default and run on their own under `free`. `skill_refine` is one tool with
+  four actions: `report` writes down that a skill you just followed went
+  wrong and hands it to a spawned reviser; `revise` and `revert` each file a
+  proposal rather than writing the live file directly. Whatever the mode, a
+  proposal that could not run is refused before it is written: a step naming
+  a tool the runtime does not have or one the skill itself forbids, a
+  credential-bearing path, or a path outside the home tree or one that cannot
+  be shown to be inside it (a network share, a variable, a tilde, a
+  drive-relative path). A revision of a live skill goes through the same
+  check, and one filed against a file that has since moved on is refused
+  rather than silently rebased onto whatever is there now.
 
-  **Three tools ask in every mode, including the one where nothing else
-  does**, and they share a shape: each is the assistant being asked to judge
-  its own work or widen its own room. `playbook_judge` is how you say a
-  playbook has earned its place or has not: keeping one activates it and puts
-  it on the list carried every turn, dropping one retires it so nothing reads
-  it again. It is held at ask in `free` as well as under the shipped default,
-  because the whole worth of the verdict is that it came from somebody other
-  than whoever did the work. An assistant free to approve its own procedures
-  would be grading its own homework, and the same rule is why a procedure is
-  only ever written down from a task whose checks actually ran.
+  **A few holds apply in every mode, including the one where nothing else
+  does**, and they share a shape: each is either the assistant being asked to
+  judge its own work, or widen its own room. `skill_refine`'s fourth action,
+  `retire`, never decides on its own account: it only files a
+  `skill_retirement` card asking whether a skill should stop being used, and
+  that card is held at `ask` in `free` as well as under the shipped default,
+  in `permissions.yaml`'s `workspace_cards` block rather than as a tool
+  posture. The whole worth of the verdict is that it came from somebody other
+  than whoever did the work; an assistant free to retire its own procedures
+  would be grading its own homework, and the same rule is why a proposed
+  revision is applied unattended (`revise`, `revert`) while the verdict to
+  stop using a skill entirely is not.
   `context_set` rewrites which model each job runs on and how every open
   conversation folds, which is the wiring rather than the work.
   `project_budget` is the ceiling on what a day of unattended work on one
@@ -552,11 +577,10 @@ These rules sit underneath the policy and are not reachable from it:
   ceiling, so the number is always yours. There is a second ceiling above it
   that covers the whole machine and everything on it, your own conversations
   included, and reaching it stops the two rows that work on their own for the
-  rest of the day. Neither number is one the assistant can move. All three
-  entries are still
-  `permissions.yaml`'s, so they are yours to change; they are listed here
-  because they are where the shipped file deliberately withholds a decision
-  from an install that has otherwise been told to run on its own.
+  rest of the day. Neither number is one the assistant can move. All of these
+  holds are still `permissions.yaml`'s, so they are yours to change; they are
+  listed here because they are where the shipped file deliberately withholds
+  a decision from an install that has otherwise been told to run on its own.
   `playbook_record`, which reports how each playbook has done, reads the
   usage log, the turn records and the cost ledger and writes nothing.
 
@@ -645,19 +669,24 @@ no less allowed. Nothing in that file can widen what the assistant may do, and
 nothing you remove from it can narrow that either. `permissions.yaml` decides
 authority and continues to.
 
-`workspace/skills/carried.txt` is the same kind of file for playbooks, and the
-same sentence applies to it. It says which of your playbooks arrive on every
+`workspace/skills/carried.txt` is the same kind of file for skills, and the
+same sentence applies to it. It says which of your skills arrive on every
 turn with a line about when to use them, and which arrive as a name alone. The
-steps of a playbook are never in the prompt either way: the assistant fetches
-those with `playbook_search`, or by reading the file. Following a playbook
+steps of a skill are never in the prompt either way: the assistant fetches
+those with `playbook_search`, or by reading the file. Following a skill
 still calls tools, and every one of those calls faces the gate exactly as it
-would have anyway.
+would have anyway. Unlike `working_set.yaml`, nothing proposes a change to
+this one: a skill's name is added to it the moment the skill goes active, and
+removed the moment the skill is retired, both done by the runtime mechanically
+rather than through a card. Nothing counts how often a skill is used to decide
+either.
 
-The runtime can suggest changes to both. It reads which tools and playbooks
-you actually used and files a card proposing a shorter or longer list. The job
-that files it never edits either file: the change happens when you approve the
-card, and approving it moves names on and off a list. It cannot add a
-capability, because being on the list was never what allowed anything.
+The runtime can still suggest changes to `working_set.yaml`. It reads which
+tools you actually used and files a card proposing a shorter or longer list.
+The job that files it never edits the file itself: the change happens when
+you approve the card, and approving it moves names on and off the list. It
+cannot add a capability, because being on the list was never what allowed
+anything.
 
 ### Driving a browser, and driving the app
 
@@ -870,10 +899,15 @@ it stays in front of you.
 
 ### What the observer keeps, and what a revoked pane takes with it
 
-The assistant watches the conversation with a second, smaller model, and it can
-also read a terminal panel you have explicitly consented to. Every observation
-it produces is written to `runtime/logs/observer/`, which is where you can read
-back what it noticed without opening the app.
+The assistant watches the conversation with a second, smaller model, which has
+three jobs: noticing something worth saving to memory, noticing that the
+conversation looks finished, and noticing repeated work that would be cheaper
+as a skill. All three are suggestions the assistant reads and may act on or
+ignore; the observer itself never saves a memory, never ends a conversation,
+and never writes a skill. It can also read a terminal panel you have
+explicitly consented to. Every observation it produces is written to
+`runtime/logs/observer/`, which is where you can read back what it noticed
+without opening the app.
 
 Those two facts meet at the point you withdraw consent. Turning the observer
 off for a panel, or answering no to the consent prompt, empties the buffered
@@ -1202,14 +1236,19 @@ Memory is stored on your machine and nothing sweeps it off. But a background
 job that asks a model a question can put some of it in that question, and if
 the role it runs under names a hosted model, that text goes to that provider.
 
-The one doing it today is the job that offers to rewrite a skill. When the work
-that followed a skill kept being corrected, it sends the model the skill's own
-text and what you said when you corrected it, because a rewrite proposed
-without the reason is a guess. That is deliberate and it is the whole value of
-the feature. It is worth knowing anyway: **a correction you typed can leave the
-machine, inside the question that asks for a better procedure.** How much of it
-is capped in `schedule.yaml`, and which model sees it is whichever your
-`roles.yaml` chain names. Point that chain at a local model and it stays here.
+The one doing it today is the fixer spawned when the assistant reports that a
+skill it just followed went wrong. Its brief carries pointers only: the
+skill's name and folder, the revision and step reported, and where the turn's
+own record sits on disk. It carries no account of what went wrong and no
+correction text, on purpose, because the working agent's own read of its own
+failure is exactly what should not be trusted uncorroborated. The fixer reads
+the turn record and the skill itself, and whatever it decides to read there,
+a correction you typed included, can end up in the question it asks a model
+to propose a rewrite. That is deliberate: a rewrite proposed without the
+reason behind it is a guess. It is worth knowing anyway: **a correction you
+typed can leave the machine, inside whatever the fixer read to write its
+proposal.** Which model sees it is whichever role the fixer runs under names
+in `roles.yaml`. Point that role at a local model and it stays here.
 
 ### What it reads when it picks its own work
 
@@ -1260,12 +1299,14 @@ call goes through the same policy as any other. A malicious skill is therefore
 equivalent to a malicious *prompt*, not to malicious *code*, and is bounded by
 everything in "Tool authority" above.
 
-Creating or activating an agent, and creating, activating or revising a
-skill, follow `permissions.yaml` like any other tool: they ask under the
-shipped default and run on their own under `free`. A skill revision never
-overwrites the version before it: a playbook's earlier revisions are kept
-under its own `history/` folder, so one that turns out worse can be stopped
-and the earlier one returned to.
+Creating an agent, and creating or changing a skill, follow `permissions.yaml`
+like any other tool: `skill_create`, and three of `skill_refine`'s four
+actions, ask under the shipped default and run on their own under `free`. The
+fourth, `retire`, never decides on its own account in any mode: it only files
+a card asking the operator whether a skill should stop being used, and only
+their answer does. A skill revision never overwrites the version before it:
+a skill's earlier revisions are kept under its own `history/` folder, so one
+that turns out worse can be stopped and the earlier one returned to.
 
 MCP servers are different and stronger: they are real code, run as their own
 processes, and are only reachable if you list them in `mcp_servers.yaml`.

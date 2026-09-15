@@ -196,13 +196,10 @@ function toLine(line: ManagedLine, kind: Tab, acts: Acts, read: string): StateLi
 }
 
 /** A playbook, read into the same one-line shape every roster on this room
- *  uses. It carries the one control the runtime hands the operator directly:
- *  `playbook_judge`'s verdict, keep or drop, offered as whichever one the
- *  current status has not already given, so an active playbook shows only
- *  `drop` and a retired one shows only `keep`. Rewording a playbook that is
- *  staying replaces the whole file with a revision only the assistant can
- *  write, so it is said in words under the list rather than drawn as a
- *  button with nothing for a click to fill in.
+ *  uses. Whether it stays active or gets retired is a decision now, not a
+ *  button here: it arrives as a `skill_retirement` card in the inbox, and
+ *  the operator answers it there like any other decidable card. This room
+ *  only shows what is running and why.
  *
  *  The sentence is the producer's own: what the playbook is for, or, when it
  *  cannot run, the one sentence saying why. `useWhen` rides under the row
@@ -212,13 +209,6 @@ function toPlaybookLine(playbook: ManagedPlaybook): StateLine {
   const value = playbook.version
     ? `v${playbook.version}, ${playbook.status}`
     : playbook.status;
-  const active = playbook.status === 'active';
-  const retired = playbook.status === 'retired';
-  const judge = (verdict: 'keep' | 'drop') =>
-    sendCommand(
-      '/playbook_judge',
-      ` name=${JSON.stringify(playbook.name)} verdict=${verdict}`,
-    );
   return {
     key: `playbooks:${playbook.name}`,
     // The state is the backend's, said with the row, like every other roster.
@@ -230,24 +220,6 @@ function toPlaybookLine(playbook: ManagedPlaybook): StateLine {
     more: playbook.useWhen ? (
       <span className="t-meta">{playbook.useWhen}</span>
     ) : undefined,
-    actions: (
-      <RowActions className="state-acts">
-        {!retired && (
-          <Hint label="Retires it. The prompt, playbook search and this panel all stop reading it. The file stays on disk.">
-            <Button tone="danger" onClick={() => judge('drop')} ariaLabel={`Drop ${playbook.name}`}>
-              drop
-            </Button>
-          </Hint>
-        )}
-        {!active && (
-          <Hint label="Activates it and carries it on every turn from now on.">
-            <Button onClick={() => judge('keep')} ariaLabel={`Keep ${playbook.name}`}>
-              keep
-            </Button>
-          </Hint>
-        )}
-      </RowActions>
-    ),
   };
 }
 
@@ -336,10 +308,13 @@ export function ManagedRoomView({
         // Said out loud rather than drawn as a button: rewording a playbook
         // that is staying replaces the whole file with a revision only the
         // assistant can write, and there is no form here for a click to fill
-        // that in with.
+        // that in with. Whether one stays or retires is answered on its card
+        // in the inbox, not here.
         <Note>
-          To reword a playbook that is staying, ask the assistant to revise
-          it. It writes the new version and keeps the one it replaces.
+          Whether a playbook stays active or gets retired is decided on its
+          card in the inbox. To reword one that is staying, ask the assistant
+          to revise it. It writes the new version and keeps the one it
+          replaces.
         </Note>
       )}
 

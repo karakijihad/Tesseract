@@ -1689,6 +1689,13 @@ input[type="number"]::-webkit-inner-spin-button {
 .hud-stats.is-overage .hud-stats-fill--voice {
   background: var(--bad);
 }
+/* The chip's hint carries a `DataTable` breakdown of what a request sends
+   (head, tools, payload, conversation, total). The table brings its own
+   look; this only clears space between the lead sentence above it and the
+   table's own border. */
+.hud-stats-hint-lead {
+  margin: 0 0 var(--space-6) 0;
+}
 
 /* ToastStack — transient top-right notifications */
 .toast-stack {

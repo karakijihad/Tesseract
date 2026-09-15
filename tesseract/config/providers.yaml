@@ -248,6 +248,10 @@ api:
         temperature: 1.0  # GPT-5 family only accepts default
         knowledge_cutoff: "2024-05-31"
         use_responses_api: true   # GPT-5 family — Responses API path (prompt cache + reasoning reuse)
+        # Characters of tool schema per token this provider charges, read off
+        # its own count. The nightly provider check writes it for a model that
+        # has none and raises a card if a later reading disagrees.
+        schema_chars_per_token: 5.41
         # Rates checked 2026-09-04 against the OpenAI pricing page.
         cost_per_mtok_in: 0.75
         cost_per_mtok_out: 4.50
@@ -284,6 +288,7 @@ api:
         reasoning_effort: high
         temperature: 1.0
         use_responses_api: true
+        schema_chars_per_token: 5.41
         # Rates checked 2026-09-04 against the OpenAI pricing page and the
         # operator's own invoice. The cached rate was absent here and the
         # ledger fell back to a hardcoded 10%, which happened to be right and
@@ -384,6 +389,7 @@ api:
           - audio
           - video
           - pdf
+        schema_chars_per_token: 4.87
       gemini_31_flash_image:
         kind: image_generation
         model: gemini-3.1-flash-image
@@ -752,6 +758,11 @@ local:
         dimensions: 768
         timeout_seconds: 30
         max_retries: 3
+        # Sizes to cut the input to, tried in order, only when Ollama
+        # refuses a prompt as too long. Measured against the running model:
+        # prose is refused past about 7850 characters and code past about
+        # 8350, so 7000 fits both; JSONL is refused past about 3450, so 3000.
+        input_cut_chars: [7000, 3000]
 
         good_for:
           - embedding

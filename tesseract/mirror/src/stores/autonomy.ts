@@ -49,6 +49,7 @@ import {
   postMuteSource,
   postResumeAgendaItem,
   postRuntimeShutdown,
+  postTaskVerdict,
   postUnmuteSource,
   postUnpauseSource,
   type ActiveWorker,
@@ -72,6 +73,7 @@ import {
   type PipelineResponse,
   type RoomLinesResponse,
   type PrunedResponse,
+  type TaskVerdict,
   type WorkerDetail,
 } from '../lib/api';
 import type { Envelope } from '../lib/types';
@@ -267,6 +269,11 @@ interface AutonomyState {
   boostItem: (id: string) => Promise<boolean>;
   unpauseSource: (source: string) => Promise<boolean>;
   runtimeShutdown: (reason?: string) => Promise<boolean>;
+
+  // The Day room's one key on a finished task. Re-reads the day afterward,
+  // same as every other action here: what the row says next is the
+  // backend's answer, never one assumed from what was sent.
+  recordVerdict: (taskId: string, verdict: TaskVerdict) => Promise<boolean>;
 }
 
 const SNOOZE_PRIORITY = -2;
@@ -1005,6 +1012,23 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
       return false;
     } finally {
       _markPending(set, key, false);
+    }
+  },
+
+  recordVerdict: async (taskId, verdict) => {
+    const sid = _resolveSession();
+    if (!sid) return false;
+    _markPending(set, taskId, true);
+    try {
+      await postTaskVerdict(taskId, { session_id: sid, verdict });
+      useToastStore.getState().push(`Marked ${verdict === 'unused' ? 'not used' : verdict}`, 'info');
+      await get().fetchDay();
+      return true;
+    } catch (err) {
+      _toastApiError('Could not save that', err);
+      return false;
+    } finally {
+      _markPending(set, taskId, false);
     }
   },
 

@@ -2651,11 +2651,18 @@ export interface DayStep {
 }
 
 export interface DayClosed {
+  id: string;
   goal: string;
   project: string;
   status: string;
   verifiedBy: string;
+  /** The last key the operator pressed on this task: 'good', 'bad', 'unused'
+   *  or '' if none yet. */
+  said: TaskVerdict | '';
 }
+
+/** The one key the operator can press on a finished task. */
+export type TaskVerdict = 'good' | 'bad' | 'unused';
 
 export interface DayProjectMoney {
   id: string;
@@ -2681,6 +2688,16 @@ export interface DayResponse {
 
 export async function fetchAutonomyDay(): Promise<DayResponse> {
   return apiFetch<DayResponse>('/api/autonomy/day');
+}
+
+export async function postTaskVerdict(
+  id: string,
+  body: { session_id: string; verdict: TaskVerdict },
+): Promise<{ task: string; verdict: TaskVerdict }> {
+  return apiPost<{ task: string; verdict: TaskVerdict }>(
+    `/api/agenda/${encodeURIComponent(id)}/verdict`,
+    body,
+  );
 }
 
 // ── Atlas: the map of how everything connects ───────────────────────────

@@ -20,7 +20,7 @@ from aiohttp import web
 from tesseract.brain import context_report
 from tesseract.kernel.adapters.base import ChunkType
 from tesseract.paths import TESSERACT_HOME
-from tesseract.mirror.server.after_turn import after_turn
+from tesseract.mirror.server.after_turn import ASK_FOR_THE_HANDOFF, after_turn
 from tesseract.mirror.server.chunk_handler import _handle_chunk
 from tesseract.mirror.server.envelope import make_envelope
 from tesseract.mirror.server.session import ServerSession, send_envelope
@@ -612,9 +612,20 @@ async def _maybe_auto_compact(
         # any other. `note` is a message the transcript draws as the runtime
         # rather than as the operator, the way a reloaded conversation already
         # draws one out of history.
+        #
+        # `cleared` says whether this note follows the actual clear. Every
+        # `announce` here reaches the frontend under the same `mark`, and only
+        # the text tells the two moments apart: `_ask_for_a_handoff` calls this
+        # BEFORE anything is archived, mid the conversation it is asking, and
+        # `_hand_over` calls it AFTER `ending()` has already cleared the
+        # conversation. `ASK_FOR_THE_HANDOFF` is the one text that means the
+        # first, so it is the one comparison this needs. The frontend store
+        # reads it to make a boundary note self-sufficient: whatever else the
+        # dispatch sequence carries, a note stamped `cleared` leaves the chat
+        # holding nothing said before it.
         await send_envelope(session, make_envelope(
             "session_note", "session", session.session_id,
-            {"text": text, "mark": "boundary"},
+            {"text": text, "mark": "boundary", "cleared": text != ASK_FOR_THE_HANDOFF},
             chat_id=stamp,
         ))
 
@@ -720,6 +731,24 @@ async def emit_stats(
                     # answered the same question correctly for the same
                     # conversation at the same moment.
                     "conversation_tokens",
+                    # What a request sends before the conversation: the head
+                    # plus the tool list, which rides its own wire field and
+                    # was missing from every figure this envelope carried.
+                    # `payload_tokens` is what the HUD's chip now labels
+                    # "payload", the same word and the same reader
+                    # (`request_size.measure_tools`) the Conscience panel's
+                    # total already used, so the two cannot drift the way
+                    # "manifest" and "Payload" once did.
+                    "tools_tokens",
+                    "payload_tokens",
+                    # Everything the payload does not cover: the per-turn late
+                    # block (clock, memory capsule, directives) plus the
+                    # conversation. `payload_tokens + rest_tokens` is the true
+                    # whole-request figure; `conversation_tokens` alone under
+                    # counts it by the late block's size, which every request
+                    # carries and which was missing from the HUD's "next
+                    # request in total" row entirely.
+                    "rest_tokens",
                 )
                 if key in report
             },

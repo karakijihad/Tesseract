@@ -130,6 +130,19 @@ def resolve_temperature(fields: Mapping[str, Any]) -> float | None:
     return None if raw is None else float(raw)
 
 
+def resolve_input_cut_chars(fields: Mapping[str, Any], where: str) -> list[int]:
+    """The embedding model's ordered fallback cut sizes, in characters.
+
+    Required from the catalog entry: the real limit is tokens, and Ollama's
+    only sign of crossing it is a refusal at call time, so `providers.yaml`
+    states the character sizes worth retrying at once and every caller reads
+    the same list rather than picking its own token-to-character ratio or
+    its own retry ladder.
+    """
+    raw = require_field(fields, "input_cut_chars", where)
+    return [int(n) for n in raw]
+
+
 def resolve_output_cap(
     fields: Mapping[str, Any], context_window: int, where: str,
 ) -> int:
@@ -972,9 +985,9 @@ def model_role_names(bundle: ConfigBundle) -> frozenset[str]:
     """Every name in ``roles.yaml`` that names a MODEL ROLE rather than an agent.
 
     Derived from the file, never listed a second time. The hand-kept copy this
-    replaces went stale in both directions at once: it was missing five roles
-    the file had gained (`consolidate`, `panel_writer`, `scheduled_task`,
-    `skill_refinement`, `skill_suggest`) and still carried two it had lost
+    replaces went stale in both directions at once: it was missing roles
+    the file had gained (`consolidate`, `panel_writer`, `scheduled_task`)
+    and still carried two it had lost
     (`mission_planner`, `vision_agent`). A test existed to catch exactly that
     and had been failing in the tree, which is what a second list always comes
     to.

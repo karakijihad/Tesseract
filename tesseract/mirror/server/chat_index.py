@@ -6,7 +6,12 @@ is rebuildable from them at any time, which is why every path here degrades to
 ``None`` or a default rather than failing a write.
 
 This module owns the connection, the batching, the row shape and the
-completeness check. It never decides what a record contains.
+completeness check. It never decides what a record CONTAINS — title,
+snippet, message count are always ``chat_store``'s own computation, reused
+here rather than copied. It does enforce the one boundary condition
+``chat_store.save_chat`` already draws before it ever calls ``upsert``: a
+channel record is never a row here, whichever path found it — a write, a
+repair, or a rebuild.
 
 Its surface is five functions — ``index_batch``, ``upsert``, ``forget``,
 ``headers``, ``rebuild_metadata_index``. Everything else is private,
@@ -25,7 +30,12 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from tesseract.mirror.server import chat_record
-from tesseract.mirror.server.chat_record import ChatRecord, chat_path, iter_history_files
+from tesseract.mirror.server.chat_record import (
+    ChatRecord,
+    chat_path,
+    default_chat_title,
+    iter_history_files,
+)
 from tesseract.paths import home_dir
 
 logger = logging.getLogger(__name__)
@@ -34,6 +44,50 @@ _T = TypeVar("_T")
 
 #: An index connection held open across a burst of writes — see ``index_batch``.
 _batch = threading.local()
+
+#: Stems `headers()` has confirmed are excluded (a channel record), keyed by
+#: stem, value is the file's mtime at the moment of confirmation. A channel
+#: stem is never indexed, so it is in `missing` on every single call, and
+#: without this it would be re-parsed forever — the exact cost the repair
+#: loop otherwise pays once per unreadable file. Process-local, so a restart
+#: re-confirms once; guarded by a lock since `headers()` can run on more than
+#: one worker thread. Invariants this cache must hold at once: (1) a channel
+#: record never reaches any listing/index row through this path, (2) files
+#: stay canonical, this only remembers a verdict already read from one, (3)
+#: unreadable-file settling and ghost pruning are untouched by it, (4) it
+#: cannot grow past the stems presently on disk, so a deleted principal's
+#: entry is dropped rather than retained forever, (5) it changes no I/O
+#: shape, so it adds no blocking work to the event loop.
+_excluded_stems: dict[str, int] = {}
+_excluded_lock = threading.Lock()
+
+
+def _confirmed_excluded(stem: str, mtime_ns: int) -> bool:
+    with _excluded_lock:
+        return _excluded_stems.get(stem) == mtime_ns
+
+
+def _mark_excluded(stem: str, mtime_ns: int) -> None:
+    with _excluded_lock:
+        _excluded_stems[stem] = mtime_ns
+
+
+def _clear_excluded(stem: str) -> None:
+    with _excluded_lock:
+        _excluded_stems.pop(stem, None)
+
+
+def _prune_excluded(on_disk: set[str]) -> None:
+    """Drop cache entries for stems no longer on disk.
+
+    Called with the same directory listing `headers()` already took, so this
+    costs no extra walk. Keeps the cache bounded by what exists rather than
+    by how many principals ever have.
+    """
+    with _excluded_lock:
+        stale = [stem for stem in _excluded_stems if stem not in on_disk]
+        for stem in stale:
+            del _excluded_stems[stem]
 
 
 def metadata_index_path() -> Path:
@@ -123,8 +177,24 @@ def index_batch():
 
 
 def _meta_row(record: ChatRecord, path: Path) -> Any:
-    from tesseract.memory.chat_metadata import ChatMetaRow
+    """The row one record writes through as. The only place this is built,
+    so the write-through path (``upsert``) and the rebuild path
+    (``_rows_from_disk``) can never compute ``message_count``/``snippet``/
+    ``last_active_at`` two different ways.
 
+    ``first_operator_text`` and ``_last_active_stamp`` are imported from
+    ``chat_store`` rather than reimplemented here: they are the SAME
+    computation ``list_chats``' parse fallback uses to build a row, and a
+    second copy is exactly how the retiring ``header_from_record`` drifted
+    from the row it was meant to mirror. Deferred import: ``chat_store``
+    imports this module at load time, so importing it back at module scope
+    here would be circular; by the time anything calls this function
+    ``chat_store`` is already fully loaded.
+    """
+    from tesseract.memory.chat_metadata import ChatMetaRow
+    from tesseract.mirror.server.chat_store import first_operator_text, _last_active_stamp
+
+    born = default_chat_title(record.created_at or "")
     return ChatMetaRow(
         chat_id=record.chat_id,
         title=record.title,
@@ -134,12 +204,38 @@ def _meta_row(record: ChatRecord, path: Path) -> Any:
         turn_count=record.turn_count,
         model=record.model,
         archived=record.archived,
+        message_count=len(record.history),
+        snippet=first_operator_text(record) if record.title == born else "",
+        last_active_at=_last_active_stamp(record),
         file_path=str(path),
     )
 
 
+def _in_the_library(record: ChatRecord) -> bool:
+    """Whether this record belongs in the index at all.
+
+    Mirrors ``chat_store.save_chat``'s own write-through gate exactly
+    (``NOT_IN_THE_LIBRARY``) rather than a second definition of "the library"
+    that could drift from it. A channel record IS on disk and its stem IS
+    found by every directory walk here, but it is the bridge's own restore
+    state, not a conversation the cockpit's drawer, the recall index, or a
+    listing may ever surface — the same reason ``chat_store._walk`` excludes
+    it by default.
+    """
+    from tesseract.mirror.server.chat_store import NOT_IN_THE_LIBRARY
+
+    return record.surface not in NOT_IN_THE_LIBRARY
+
+
 def upsert(record: ChatRecord, path: Path) -> None:
-    """Write one record's header through to the index. Best-effort."""
+    """Write one record's header through to the index. Best-effort.
+
+    Refuses a record outside the library even if a future caller forgets the
+    check ``save_chat`` already makes before calling this — one enforcement
+    point rather than one per caller.
+    """
+    if not _in_the_library(record):
+        return
     _with_index(lambda index: index.upsert(_meta_row(record, path)), None)
 
 
@@ -154,7 +250,8 @@ def _rows_from_disk() -> tuple[list[Any], int]:
     The second number is what keeps ``headers``' completeness check honest.
     A file that will not parse is not a row anybody could have written, so
     counting it as a missing row would condemn the index for a record that
-    does not exist.
+    does not exist. A channel record parses fine and is skipped for a
+    different reason (``_in_the_library``), so it is counted as neither.
     """
     rows: list[Any] = []
     unreadable = 0
@@ -162,6 +259,8 @@ def _rows_from_disk() -> tuple[list[Any], int]:
         record = chat_record.read_record(path.stem)
         if record is None:
             unreadable += 1
+            continue
+        if not _in_the_library(record):
             continue
         rows.append(_meta_row(record, path))
     return rows, unreadable
@@ -212,6 +311,7 @@ def headers(
     if not indexed:
         return None
     on_disk = {path.stem for path in iter_history_files()}
+    _prune_excluded(on_disk)
 
     ghosts = indexed - on_disk
     if ghosts:
@@ -226,17 +326,40 @@ def headers(
     # not a record anybody could have written a row for, so it stays absent and
     # this settles: the next call re-attempts one failed json parse rather than
     # re-reading every transcript.
+    #
+    # A channel record settles the OTHER way: it parses fine, every single
+    # call, and is never indexed, so it stays in `missing` forever. Re-parsing
+    # it on every listing would be the one-file cost `headers` already accepts
+    # for a file that will not parse at all, paid instead on every call by
+    # however many channel principals the bridge has. `_excluded_stems`
+    # remembers the verdict once it is confirmed and skips the parse until the
+    # file's mtime moves, which is the only event that can change the verdict.
     repaired = 0
+    excluded = 0
     for stem in missing:
+        path = chat_path(stem)
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        if mtime_ns is not None and _confirmed_excluded(stem, mtime_ns):
+            excluded += 1
+            continue
         record = chat_record.read_record(stem)
         if record is None:
             continue
-        upsert(record, chat_path(stem))
+        if not _in_the_library(record):
+            excluded += 1
+            if mtime_ns is not None:
+                _mark_excluded(stem, mtime_ns)
+            continue
+        _clear_excluded(stem)
+        upsert(record, path)
         repaired += 1
-    if repaired < len(missing):
+    if repaired + excluded < len(missing):
         logger.warning(
             "chat_metadata: %d chat record(s) could not be read and are absent "
-            "from the drawer", len(missing) - repaired,
+            "from the drawer", len(missing) - repaired - excluded,
         )
     if not repaired and not ghosts:
         return rows

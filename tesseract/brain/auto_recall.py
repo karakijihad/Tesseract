@@ -49,6 +49,14 @@ _RECALL_CLOSE = "[/recalled_memories]"
 #: a block that arrives unasked.
 _ALREADY_FOUND_BY_SEARCH = frozenset({"similar_to"})
 
+#: Which kinds of connection earn a slot first, earliest first; any other kind
+#: follows, by name. Measured on the live graph 2026-09-15, the connections
+#: beside a memory were `filed_under` 491, `mentions` 121, `derived_from` 41 and
+#: `written_by` 11. What the record came out of leads because it is the one a
+#: search can never find; the subject follows, then what it names, then the run
+#: that wrote it.
+_PUSH_ORDER = ("derived_from", "filed_under", "mentions", "written_by")
+
 
 def _require(d: dict, key: str, where: str):
     if key not in d:
@@ -90,14 +98,32 @@ def load_auto_recall_config() -> AutoRecallConfig:
 
 
 @dataclass(frozen=True)
+class Connection:
+    """One thing the map says a recalled record connects to.
+
+    `node_id` is carried because `atlas_query` starts from ids, not names: a
+    connection shown only by its name is one the assistant has to search for
+    before it can walk from it, and once the search has answered there is
+    nothing left to walk for. `members` is how many memories share a subject,
+    zero for anything that is not one, so a subject filed under by half the
+    store reads differently from one that gathers four records.
+    """
+
+    name: str
+    node_id: str
+    how: str
+    members: int = 0
+
+
+@dataclass(frozen=True)
 class RecallItem:
     memory_id: str
     text: str
     score: float
-    #: What the map says this record connects to, as `(name, how)` pairs.
-    #: Empty when the graph has not been drawn, cannot be read, or holds
-    #: nothing beside this record. See :func:`with_connections`.
-    connections: tuple[tuple[str, str], ...] = ()
+    #: What the map says this record connects to. Empty when the graph has not
+    #: been drawn, cannot be read, or holds nothing beside this record. See
+    #: :func:`with_connections`.
+    connections: tuple[Connection, ...] = ()
 
 
 def _is_calibrated(result) -> bool:
@@ -236,36 +262,66 @@ def with_connections(items: list[RecallItem], *, limit: int) -> list[RecallItem]
         # Read once for the whole block. Every hit is looked up in the same
         # edge list, and walking it per hit would be five passes over the
         # graph to answer one question about five records.
-        beside: dict[str, list[tuple[str, str]]] = {}
+        beside: dict[str, set[tuple[str, str, str]]] = {}
+        members: dict[str, set[str]] = {}
         for edge in atlas.edges.values():
             if edge.type in _ALREADY_FOUND_BY_SEARCH:
                 continue
+            if edge.type == "filed_under" and edge.subject.startswith("mem:"):
+                members.setdefault(edge.object, set()).add(edge.subject)
             for near, far in ((edge.subject, edge.object), (edge.object, edge.subject)):
-                other = atlas.nodes.get(far)
-                if other is None:
-                    continue
-                beside.setdefault(near, []).append(
-                    (other.title or other.id, label_of_link(edge.type))
-                )
+                if far in atlas.nodes:
+                    beside.setdefault(near, set()).add((edge.type, far, near))
     except Exception:  # noqa: BLE001 — the map is not a reason to lose the turn
         logger.info("auto_recall: the map could not be read", exc_info=True)
         return items
 
+    def rank(link: tuple[str, str, str]) -> tuple:
+        # Ranked before the cap, and every key is a fact of the graph, so the
+        # same graph still gives the same block: a prompt that changes between
+        # two identical turns is a cache that never hits. It used to sort by
+        # title alone, so the slots went to whatever spelled earliest. Within a
+        # kind the smaller subject leads, because a subject half the store is
+        # filed under says almost nothing about this record.
+        link_type, far, _near = link
+        order = _PUSH_ORDER.index(link_type) if link_type in _PUSH_ORDER else len(_PUSH_ORDER)
+        node = atlas.nodes[far]
+        return (order, link_type, len(members.get(far, ())), node.title or far, far)
+
     out: list[RecallItem] = []
     for item in items:
-        near = beside.get(f"mem:{item.memory_id}", ())
-        # Sorted, so the same graph gives the same block: an edge dict's order
-        # is the order a build happened to write it in, and a prompt that
-        # changes between two identical turns is a cache that never hits.
+        near = sorted(beside.get(f"mem:{item.memory_id}", ()), key=rank)[:limit]
         out.append(
             RecallItem(
                 memory_id=item.memory_id,
                 text=item.text,
                 score=item.score,
-                connections=tuple(sorted(set(near))[:limit]),
+                connections=tuple(
+                    Connection(
+                        name=atlas.nodes[far].title or far,
+                        node_id=far,
+                        how=label_of_link(link_type),
+                        members=len(members.get(far, ())),
+                    )
+                    for link_type, far, _near in near
+                ),
             )
         )
     return out
+
+
+def _render_connection(c: Connection) -> str:
+    """`name [id] (how)`, and for a subject how many memories it gathers.
+
+    The name is left out when the id already spells it, which is most of them
+    (`tag:workshop`, `source:.../README.md`): measured on the live graph, the
+    repetition was most of what carrying the id cost.
+    """
+    where = c.node_id
+    if c.members:
+        where += f", {c.members} memor{'y' if c.members == 1 else 'ies'}"
+    named = "" if c.name in c.node_id else f"{c.name} "
+    return f"{named}[{where}] ({c.how})"
 
 
 def format_recall_block(items: list[RecallItem]) -> str:
@@ -280,7 +336,7 @@ def format_recall_block(items: list[RecallItem]) -> str:
     for it in items:
         lines.append(f"- {it.text} ({it.memory_id}, {it.score:.2f})")
         if it.connections:
-            joined = "; ".join(f"{name} ({how})" for name, how in it.connections)
+            joined = "; ".join(_render_connection(c) for c in it.connections)
             lines.append(f"  connects to: {joined}")
     lines.append(_RECALL_CLOSE)
     return "\n".join(lines)
@@ -288,6 +344,7 @@ def format_recall_block(items: list[RecallItem]) -> str:
 
 __all__ = [
     "AutoRecallConfig",
+    "Connection",
     "RecallItem",
     "auto_recall",
     "format_recall_block",

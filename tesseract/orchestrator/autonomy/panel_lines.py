@@ -197,6 +197,39 @@ async def _one(
 # rather than defended against.
 _WRITING: asyncio.Task[Any] | None = None
 
+
+@dataclass
+class _Write:
+    """One `write_behind` call's own abandonment flag.
+
+    Not a module-level bool: that shape let a shutdown mark write A abandoned,
+    then a fresh `write_behind` call for write B reset the SAME flag to start
+    cleanly, so A's thread (still running underneath its cancelled wrapper
+    task, see below) later failed with the flag clear and logged a full
+    traceback for a write nobody was waiting on any more. Each call now owns
+    a private cell, captured by its own `_in_its_own_loop` closure, so
+    `abandon()` marks only the write that is actually in flight when it is
+    called.
+    """
+
+    abandoned: bool = False
+
+
+# Set by a shutdown that gave up on `in_flight()`'s task after its grace
+# expired. `to_thread` cancellation discards the wrapper task's result, not
+# the thread: `_in_its_own_loop` keeps running underneath, on its own event
+# loop, and can still hit `RuntimeError: cannot schedule new futures after
+# shutdown` once the interpreter's executor closes under it. That failure is
+# expected once the caller has already given up on it, so the flag tells the
+# handler below to log one quiet line instead of a full traceback in the one
+# file a crash is read from.
+#
+# Points at the write currently held by `_WRITING`, the two always assigned
+# together. `abandon()` mutates the cell in place, which is what the in-flight
+# write's own closure sees; reassigning this name for the NEXT write leaves
+# that cell, and its `abandoned` value, exactly as `abandon()` left it.
+_CURRENT: _Write | None = None
+
 # How many rooms one pass writes. The panel polls, and each pass takes the
 # stalest rooms it has budget for; two or three passes fill an eight room rail.
 # This is what bounds a pass, rather than a clock: the loop stops itself, and
@@ -368,11 +401,15 @@ def write_behind(
     chains calling at once is the shape that produced the outage this exists to
     avoid.
     """
-    global _WRITING
+    global _WRITING, _CURRENT
     if not chain:
         return False
     if _WRITING is not None and not _WRITING.done():
         return False
+    # A fresh write, with its own abandonment cell: never the one a previous
+    # shutdown gave up on, and never shared with whatever the NEXT call makes.
+    write = _Write()
+    _CURRENT = write
 
     def _in_its_own_loop() -> None:
         """The write, on a thread, with an event loop of its own.
@@ -404,7 +441,13 @@ def write_behind(
                 deadline,
             )
         except Exception:  # noqa: BLE001 — a line may fail; a panel may not
-            log.exception("panel lines: the writer failed")
+            if write.abandoned:
+                log.warning(
+                    "panel lines: the writer did not land before shutdown "
+                    "gave up on it"
+                )
+            else:
+                log.exception("panel lines: the writer failed")
 
     async def _run() -> None:
         await asyncio.to_thread(_in_its_own_loop)
@@ -431,9 +474,24 @@ def in_flight() -> "asyncio.Task[None] | None":
     return _WRITING if _WRITING is not None and not _WRITING.done() else None
 
 
+def abandon() -> None:
+    """Mark the in-flight write as given up on.
+
+    For a shutdown that granted `in_flight()`'s task a short grace and is
+    about to cancel it. The thread underneath keeps running regardless (see
+    `_Write`), so this is what keeps its eventual failure, if any, out of the
+    log as a traceback: the caller already knows it gave up. Marks only the
+    write that is in flight right now; a write started after this one is a
+    fresh `_Write` cell of its own and is untouched.
+    """
+    if _CURRENT is not None:
+        _CURRENT.abandoned = True
+
+
 __all__ = [
     "CHAIN",
     "ENTRY",
+    "abandon",
     "first_answer_budget",
     "in_flight",
     "INSTRUCTION",

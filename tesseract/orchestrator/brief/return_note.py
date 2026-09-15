@@ -395,10 +395,11 @@ def _playbooks(since: datetime, event_store: Any | None) -> list[Line]:
             "skill_retirement": "retired",
         }.get(ev.kind, "revised")
         if ev.status in {"rejected", "deleted"}:
-            # A retirement asks for nothing, so there is no declining it: the
-            # revision was already withdrawn when the card was written, and
-            # the only decision on it is that it has been read.
-            verb = "declined" if ev.kind != "skill_retirement" else verb
+            # A rejected retirement is a decision that nothing changes: the
+            # skill was ASKED whether it should stop being used and stays
+            # exactly as it was, which is a different sentence from having
+            # been retired.
+            verb = "kept" if ev.kind == "skill_retirement" else "declined"
         lines.append(Line(f"{ev.title}: {verb}{_numbers(ev)}", ev.event_id))
     return lines[-_PER_SECTION:]
 

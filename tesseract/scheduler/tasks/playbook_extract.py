@@ -1,8 +1,8 @@
 """A task the operator accepted as done becomes a playbook, or supports one.
 
-The loop this closes: something notices a skill is failing
-(`skill_refinement`) and something rewrites it, but nothing wrote one down from
-a problem that got solved. This reads the record of solved problems.
+The loop this closes: something notices a skill is failing (a `skill_refine`
+report) and something rewrites it, but nothing wrote one down from a problem
+that got solved. This reads the record of solved problems.
 
 **Keyed on a closed task, not on a repeated sequence.** `task_close` is where
 the operator accepts the evidence that a task is done, so a task in the agenda
@@ -12,18 +12,20 @@ repeats across every turn was measured on this machine and found nothing: the
 most repeated tool sequence was one `file_read`, six times, and the long turns
 a playbook would be worth having never repeat.
 
-**The two-turn rule survives, as activation.** One accepted task writes a
-``draft`` into the pending quarantine with the turns it came from in
-``evidence`` and files the card. **Then the file decides whether a hand is
-needed**: where `permissions.yaml` resolves `skill_promote` to auto in the
-mode the install runs in, the draft is promoted on the spot and the card is
-settled as approved, because nothing else would ever pick it up (measured:
-no job, mapper or prompt reads a pending card); where it resolves to ask, the
-draft waits on the card, which is the shipped default.
+**Every write goes live, on the spot or on approval.** One accepted task
+writes a skill, already ``status: active``, into the pending
+quarantine with the turns it came from in ``evidence``, and files the card.
+**Then the file decides only whether a hand is needed**: where
+`permissions.yaml` resolves `skill_create` to auto in the mode the install
+runs in, the draft is promoted on the spot, the card is settled as approved,
+and the name is added to `carried.txt`, because nothing else would ever pick
+it up (measured: no job, mapper or prompt reads a pending card); where it
+resolves to ask, the draft waits on the card, which does the same on
+approval.
 A later task whose tool sequence matches an existing playbook does not write a
-second one: it adds its turns to that playbook's evidence, and a ``draft`` with
-a second supporting task becomes ``active``. One success is a coincidence; the
-brief said so and this is where the rule is kept.
+second one: it adds its turns to that playbook's evidence. One success is a
+coincidence; the brief said so, and the skill was already live and carried
+from the first one.
 
 **A shape floor, in config.** A task whose turns ran fewer than
 ``min_tool_steps`` tool calls is not a procedure; ``file_read`` once is a fact
@@ -45,10 +47,12 @@ use it and when not, what done looks like, the failure modes and a body, from
 the task's goal and criteria. Without a model the run is ``degraded`` and
 writes nothing: a playbook with a goal for a trigger would be junk.
 
-**Refused at the same door the assistant's own drafts go through.**
-`skill_create.refuse_playbook` runs on the rendered file with the live
-registry: a step naming a tool the runtime does not have, a credential-bearing
-path, a path outside the home tree, and nothing is written.
+**Refused at the same door the assistant's own drafts go through** —
+`brain/skill_door.py::create_skill`, which every trigger writes a skill
+through now. It runs `refuse_playbook` on the rendered file with the live
+registry (a step naming a tool the runtime does not have, a credential-bearing
+path, a path outside the home tree), writes the draft, files the card, and
+promotes it on the same rule `skill_create` itself would resolve to.
 
 Never raises; the handler contract returns ``JobResult(ok=False, ...)``.
 """
@@ -65,14 +69,17 @@ from pathlib import Path
 from typing import Any
 
 from tesseract.lib.clock import to_local
+from tesseract.brain.skill_door import (
+    DraftStep,
+    SkillDraft,
+    create_skill,
+    matching_sequence,
+    scan_sequences,
+)
 from tesseract.brain.skills import (
-    SKILL_FILENAME,
     SKILL_PENDING_DIRNAME,
     add_evidence,
-    load_skill_folder,
-    load_skills,
 )
-from tesseract.kernel.tools.skill_promote import promote_pending_skill, promotion_is_auto
 from tesseract.orchestrator.autonomy.agenda_history import done_since
 from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.turns.manifest import read_step_name
@@ -134,7 +141,7 @@ class PlaybookExtractJob(BaseJob):
             # the playbook it was written from and activate it on its own.
             position = _position_store(ctx)
             tasks = await asyncio.to_thread(done_since, position.get(_POSITION_KEY))
-            existing = await asyncio.to_thread(_existing_playbooks, skills_dir)
+            existing = await asyncio.to_thread(scan_sequences, skills_dir)
 
             proposed: list[str] = []
             supported: list[str] = []
@@ -160,23 +167,27 @@ class PlaybookExtractJob(BaseJob):
                     too_short += 1
                     continue
                 turn_ids = [t["run_id"] for t in turns]
-                match = _matching(existing, sequence)
+                match = matching_sequence(existing, sequence)
                 if match is not None:
                     folder, entry_name = match
-                    err = await asyncio.to_thread(
-                        add_evidence, folder, turn_ids, activate=True
-                    )
+                    err = await asyncio.to_thread(add_evidence, folder, turn_ids)
                     if err is None:
                         supported.append(entry_name)
                     else:
                         log.error("playbook_extract: could not support %s: %s", entry_name, err)
                     continue
-                outcome = await self._propose(
+                outcome, matched_name = await self._propose(
                     ctx, skills_dir, tool_names, task, sequence, turn_ids
                 )
                 if outcome == "proposed":
                     proposed.append(str(task.get("id") or ""))
-                    existing = await asyncio.to_thread(_existing_playbooks, skills_dir)
+                    existing = await asyncio.to_thread(scan_sequences, skills_dir)
+                elif outcome == "supported":
+                    # The door found a match itself, in the gap between the
+                    # scan above and the write below — the same rule the loop
+                    # applies, applied once more so a race is never lost.
+                    if matched_name:
+                        supported.append(matched_name)
                 elif outcome == "refused":
                     refused += 1
                 elif outcome == "no_model":
@@ -233,87 +244,69 @@ class PlaybookExtractJob(BaseJob):
         task: dict[str, Any],
         sequence: list[str],
         turn_ids: list[str],
-    ) -> str:
-        """Write one draft into the pending quarantine and file its card.
-        Returns `proposed`, `refused` or `no_model`."""
-        from tesseract.kernel.tools.skill_create import (
-            PlaybookStep,
-            SkillCreateInput,
-            refuse_playbook,
-            render_skill_markdown,
-        )
-
+    ) -> tuple[str, str | None]:
+        """Ask the model for the prose, then hand the draft to the one door.
+        Returns (`proposed` | `supported` | `refused` | `no_model` | `no_card`,
+        the matched skill's name when the outcome is `supported`)."""
         prose = await self._ask(ctx, task, sequence)
         if prose is None:
-            return "no_model"
+            return "no_model", None
         name = str(prose.get("name") or "").strip()
         if not _NAME_RE.match(name) or (skills_dir / name).exists() or (
             skills_dir / SKILL_PENDING_DIRNAME / name
         ).exists():
             name = _slug(str(task.get("goal") or "task"), skills_dir)
         said_steps = [str(s) for s in (prose.get("steps") or [])]
-        steps = [
-            PlaybookStep(
+        steps = tuple(
+            DraftStep(
                 do=said_steps[i] if i < len(said_steps) and said_steps[i].strip() else f"call {tool}",
                 tool=tool,
             )
             for i, tool in enumerate(sequence)
-        ]
-        inp = SkillCreateInput(
+        )
+        draft = SkillDraft(
             name=name,
             description=str(prose.get("description") or task.get("goal") or name)[:_LINE_MAX_CHARS],
             instructions=str(prose.get("body") or f"# {name}\n")[:_BODY_MAX_CHARS],
             rationale=f"learned from task {task.get('id')}",
             proposer="entity",
-            version="1",
-            allowed_tools=sorted(set(sequence)),
+            allowed_tools=tuple(sorted(set(sequence))),
             trigger=str(prose.get("trigger") or ""),
             use_when=str(prose.get("use_when") or ""),
             not_when=str(prose.get("not_when") or ""),
-            preconditions=_lines(prose.get("preconditions")),
+            preconditions=tuple(_lines(prose.get("preconditions"))),
             steps=steps,
-            forbidden_tools=[],
             expected_result=str(prose.get("expected_result") or task.get("goal") or ""),
-            failure_modes=_lines(prose.get("failure_modes")),
-            evidence=turn_ids,
+            failure_modes=tuple(_lines(prose.get("failure_modes"))),
+            evidence=tuple(turn_ids),
         )
-        rendered = render_skill_markdown(inp)
-        why = refuse_playbook(rendered, name, tool_names)
-        if why:
-            log.warning("playbook_extract: %s for task %s: %s", name, task.get("id"), why)
-            return "refused"
-        folder = skills_dir / SKILL_PENDING_DIRNAME / name
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            tmp = folder / (SKILL_FILENAME + ".tmp")
-            tmp.write_text(rendered, encoding="utf-8")
-            tmp.replace(folder / SKILL_FILENAME)
-        except OSError:
-            log.exception("playbook_extract: could not write %s", folder)
-            return "refused"
-        if load_skill_folder(folder) is None:
-            # Written and unreadable is a draft nothing can promote. Take it
-            # back; the task is counted as refused and the position moves on,
-            # because the same prose would fail the same way next pass.
-            _remove_draft(folder)
-            return "refused"
-        event_id = await self._file_card(ctx, name, task, rendered, turn_ids)
-        if not event_id:
-            # A draft with no card is a draft nothing can reach under the
-            # shipped default. Take it back and read the task again next
-            # pass, the way a task the model could not be asked about is.
-            _remove_draft(folder)
-            return "no_card"
         registry = ctx.app.get("tool_registry") if ctx.app is not None else None
-        if promotion_is_auto(registry):
-            entry, err = await asyncio.to_thread(promote_pending_skill, skills_dir, name)
-            if err is not None:
-                log.error("playbook_extract: could not promote %s: %s", name, err)
-            else:
-                log.info("playbook_extract: promoted %s on its own; skill_promote is auto here", name)
-                if event_id:
-                    _settle(ctx, event_id, "promoted on its own: skill_promote is auto in this mode")
-        return "proposed"
+        result = await create_skill(
+            draft,
+            skills_dir=skills_dir,
+            origin="task_done",
+            attended=False,
+            event_store=_resolve_store(ctx),
+            app_provider=(lambda: ctx.app) if ctx.app is not None else None,
+            tool_names=tool_names,
+            registry=registry,
+            card_title=f"Playbook proposal: {name}",
+            card_summary=(
+                f"Learned from a task you accepted as done: {task.get('goal', '')}. "
+                f"Promote it and the assistant follows it next time."
+            ),
+            card_extra={"task_id": task.get("id"), "evidence": list(turn_ids)},
+        )
+        if result.status == "supported":
+            return "supported", result.matched_name
+        if result.status == "refused_card":
+            return "no_card", None
+        if result.status.startswith("refused"):
+            log.warning("playbook_extract: %s for task %s: %s", name, task.get("id"), result.reason)
+            return "refused", None
+        if result.status == "created_active":
+            log.info("playbook_extract: promoted %s on its own; skill_create is auto here", name)
+        return "proposed", None
 
     async def _ask(self, ctx: JobContext, task: dict[str, Any], sequence: list[str]) -> dict[str, Any] | None:
         try:
@@ -352,53 +345,6 @@ class PlaybookExtractJob(BaseJob):
             if parsed is not None:
                 return parsed
         return None
-
-    async def _file_card(
-        self, ctx: JobContext, name: str, task: dict[str, Any], rendered: str, turn_ids: list[str]
-    ) -> str:
-        """File the proposal card; returns its id, or "" when it could not be filed."""
-        from tesseract.workspace_events import WorkspaceEvent
-
-        store = _resolve_store(ctx)
-        event = WorkspaceEvent.new(
-            kind="skill_approval",
-            source="agent",
-            title=f"Playbook proposal: {name}",
-            summary=(
-                f"Learned from a task you accepted as done: {task.get('goal', '')}. "
-                f"Promote it and the assistant will follow it next time; it becomes "
-                f"active once it has carried a second task through."
-            ),
-            payload={
-                "name": name,
-                "description": name,
-                "rationale": f"learned from task {task.get('id')}",
-                "proposer": "entity",
-                "rendered_markdown": rendered,
-                "evidence": turn_ids,
-                "task_id": task.get("id"),
-            },
-        )
-        try:
-            store.append_event(event)
-        except Exception:
-            log.exception("playbook_extract: append card failed for %s", name)
-            return ""
-        try:
-            from tesseract.workspace_events.broadcast import broadcast_workspace_event
-
-            if ctx.app is not None:
-                await broadcast_workspace_event(ctx.app, event)
-        except Exception:
-            log.warning("playbook_extract: broadcast failed", exc_info=True)
-        return event.event_id
-
-
-def _settle(ctx: JobContext, event_id: str, reason: str) -> None:
-    try:
-        _resolve_store(ctx).update_event_status(event_id, "approved", reason=reason)
-    except Exception:
-        log.warning("playbook_extract: could not settle card %s", event_id, exc_info=True)
 
 
 # ─── Helpers ─────────────────────────────────────────────
@@ -461,37 +407,6 @@ def _tool_sequence(turns: list[dict[str, Any]]) -> list[str]:
     return out
 
 
-def _existing_playbooks(skills_dir: Path) -> list[tuple[Path, str, list[str]]]:
-    """Every skill, active and pending, with its tool sequence."""
-    found: list[tuple[Path, str, list[str]]] = []
-    for entry in load_skills(skills_dir):
-        found.append((skills_dir / entry.dirname, entry.name, _steps_tools(entry)))
-    pending = skills_dir / SKILL_PENDING_DIRNAME
-    if pending.is_dir():
-        for folder in sorted(p for p in pending.iterdir() if p.is_dir()):
-            entry = load_skill_folder(folder)
-            if entry is not None:
-                found.append((folder, entry.name, _steps_tools(entry)))
-    return found
-
-
-def _steps_tools(entry: Any) -> list[str]:
-    out: list[str] = []
-    for step in entry.steps:
-        if step.tool and not (out and out[-1] == step.tool):
-            out.append(step.tool)
-    return out
-
-
-def _matching(
-    existing: list[tuple[Path, str, list[str]]], sequence: list[str]
-) -> tuple[Path, str] | None:
-    for folder, name, tools in existing:
-        if tools and tools == sequence:
-            return folder, name
-    return None
-
-
 def _json_object(text: str) -> dict[str, Any] | None:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
@@ -513,14 +428,6 @@ def _lines(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(item)[:_LINE_MAX_CHARS] for item in raw[:_LIST_MAX_ITEMS] if str(item).strip()]
-
-
-def _remove_draft(folder: Path) -> None:
-    try:
-        (folder / SKILL_FILENAME).unlink(missing_ok=True)
-        folder.rmdir()
-    except OSError:
-        log.warning("playbook_extract: could not remove the draft at %s", folder, exc_info=True)
 
 
 def _slug(goal: str, skills_dir: Path) -> str:

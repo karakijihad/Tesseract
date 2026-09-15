@@ -43,6 +43,7 @@ from tesseract.mirror.server.routes import system as system_route
 from tesseract.mirror.server.routes import uploads as uploads_route
 from tesseract.mirror.server.routes import voice as voice_route
 from tesseract.mirror.server.routes import workspace as workspace_route
+from tesseract.mirror.server.routes import workspace_docs as workspace_docs_route
 from tesseract.mirror.server.routes.controller_sessions import (
     controller_session_status_handler,
     controller_sessions_handler,
@@ -533,9 +534,9 @@ def _register_routes(app: web.Application) -> None:
     )
     app.router.add_get("/api/workspace/seen", workspace_route.get_seen)
     app.router.add_post("/api/workspace/seen", workspace_route.post_seen)
-    app.router.add_get("/api/workspace/docs", workspace_route.list_docs)
-    app.router.add_get("/api/workspace/doc", workspace_route.get_doc)
-    app.router.add_post("/api/workspace/doc", workspace_route.save_doc)
+    app.router.add_get("/api/workspace/docs", workspace_docs_route.list_docs)
+    app.router.add_get("/api/workspace/doc", workspace_docs_route.get_doc)
+    app.router.add_post("/api/workspace/doc", workspace_docs_route.save_doc)
     app.router.add_get("/api/commands", commands_route.list_commands)
     app.router.add_get("/ws", websocket_handler)
     # Audit-1 M-2 — Mirror observer bridge to a controller session. Opens
@@ -1409,6 +1410,40 @@ async def _on_shutdown(app: web.Application) -> None:
         liveness_task.cancel()
         try:
             await liveness_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    # The panel-lines write-behind task lives in a module global, not the
+    # app dict: `panel_lines.write_behind` can be started from any surface
+    # that reads a room, not just this app. `in_flight()` is how a caller
+    # reaches it without starting a second write; joining it here is what
+    # keeps it from running past interpreter exit, where its own
+    # `asyncio.to_thread` calls hit `RuntimeError: cannot schedule new
+    # futures after shutdown` and logged a full traceback in the one file a
+    # crash is read from.
+    #
+    # A write one HTTP response from finishing is worth waiting for; one
+    # that has barely started is not, so this grants a short grace rather
+    # than the whole chain's deadline, then cancels. `_LOOP_CLOSE_GRACE_S` is
+    # reused rather than a second invented number: it already answers "how
+    # long does this process wait before giving up and leaving anyway" one
+    # layer down, at `_leave_anyway`. Cancelling the task discards its
+    # result, not the thread underneath (the same shape as the warmup
+    # drain below), so `panel_lines.abandon()` marks it given up on before
+    # the cancel, and the module's own handler logs quietly instead of a
+    # traceback if the thread fails after that. No new write is started
+    # here, only the existing one joined.
+    from tesseract.orchestrator.autonomy import panel_lines
+    panel_task = panel_lines.in_flight()
+    if panel_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(panel_task), timeout=_LOOP_CLOSE_GRACE_S)
+        except asyncio.TimeoutError:
+            panel_lines.abandon()
+            panel_task.cancel()
+            try:
+                await panel_task
+            except (asyncio.CancelledError, Exception):
+                pass
         except (asyncio.CancelledError, Exception):
             pass
     # mcp-control-plane P2 — signal open MCP SSE streams to close.
@@ -3008,6 +3043,31 @@ def _build_voice_runtime(app: web.Application) -> None:
         # ── STT ─────────────────────────────────────────────────
         local_entry = next((e for e in stt_chain if e.get("adapter") == "local_whisper"), None)
         cloud_stt_entry = next((e for e in stt_chain if e.get("adapter") == "gemini"), None)
+        # Unlike TTS, `STTEngine` holds exactly one local lane and one cloud
+        # lane by construction (`local_config`/`cloud_config`, not a lanes
+        # dict) — local-first with one cloud fallback is the whole shape,
+        # so a second entry of either adapter cannot get a lane of its own
+        # here the way a second TTS entry now can. It should not vanish in
+        # silence either, so this names it the way TTS now names its own
+        # dropped entries.
+        for entry in stt_chain:
+            if entry is local_entry or entry is cloud_stt_entry:
+                continue
+            adapter = entry.get("adapter")
+            if adapter in ("local_whisper", "gemini"):
+                log.warning(
+                    "voice: STT ref=%s names the %s adapter, which already has "
+                    "a lane earlier in the chain — this build holds one local "
+                    "and one cloud STT lane, so the second is not built",
+                    entry.get("ref"), adapter,
+                )
+            else:
+                log.warning(
+                    "voice: STT ref=%s names the %s adapter, which this build "
+                    "does not know how to drive as a listening lane — lane not "
+                    "built",
+                    entry.get("ref"), adapter,
+                )
 
         if local_entry or cloud_stt_entry:
             local_config = None
@@ -3058,103 +3118,113 @@ def _build_voice_runtime(app: web.Application) -> None:
                 _schedule_warmup(app, app["stt_engine"].warm_up_local(), name="whisper")
 
         # ── TTS ─────────────────────────────────────────────────
-        kokoro_entry = next((e for e in tts_chain if e.get("adapter") == "kokoro"), None)
         # `adapter` is a CONNECTION field, so Google's TTS and STT entries
         # both report `gemini`. What identifies a cloud SPEAKING lane is
         # the pair of fields only a TTS entry carries: its own endpoint
         # (this model family is on the Interactions API, not the chat
         # base) and the voice to speak in.
-        #
-        # Matching on those rather than on the adapter alone is also what
-        # keeps a half-written catalog entry from taking down the whole
-        # subsystem: everything below runs under one `try`, so a KeyError
-        # here would leave the machine with no voice AND no ears. An entry
-        # this build cannot drive is skipped and the remaining lanes
-        # serve — the contract this function's docstring already states.
-        gemini_tts_entry = next(
-            (
-                e for e in tts_chain
-                if e.get("adapter") == "gemini"
-                and e.get("base_url_override")
-                and e.get("voice")
-            ),
-            None,
-        )
-        unbuildable = [
-            e for e in tts_chain
-            if e.get("adapter") == "gemini" and e is not gemini_tts_entry
-        ]
-        for entry in unbuildable:
-            log.warning(
-                "voice: TTS ref=%s names the gemini adapter but carries no "
-                "`base_url_override`/`voice` — lane not built",
-                entry.get("ref"),
+        def _kokoro_lane_config(entry: dict) -> "KokoroTTSConfig":
+            kokoro_models_dir = voice_model_files.lane_dir("kokoro")
+            model_filename = entry["model"]
+            voices_filename = entry.get("voices_file", "voices-v1.0.bin")
+            k_model_path = kokoro_models_dir / model_filename
+            k_voices_path = kokoro_models_dir / voices_filename
+            k_presets_raw = entry.get("synthesis_presets") or {}
+            k_presets = {
+                name: KokoroPreset(
+                    speed=float(spec.get("speed", 1.0)),
+                    sentence_silence=float(spec.get("sentence_silence", 0.2)),
+                )
+                for name, spec in k_presets_raw.items()
+            }
+            k_mix_raw = entry.get("mix") or {}
+            k_mix = {str(vid): float(weight) for vid, weight in k_mix_raw.items()}
+            if not k_mix:
+                log.warning("voice: Kokoro entry has empty `mix` — synthesis will fail")
+            return KokoroTTSConfig(
+                model_path=k_model_path,
+                voices_path=k_voices_path,
+                mix=k_mix,
+                lang=str(entry.get("lang", "en-gb")),
+                device=str(entry.get("device", "cuda")),
+                sample_rate=int(entry.get("sample_rate", 24000)),
+                presets=k_presets,
+                preload=bool(entry.get("preload", False)),
+                timeout_seconds=float(entry.get("timeout_seconds", 60.0)),
             )
 
-        if kokoro_entry or gemini_tts_entry:
-            kokoro_config = None
-            gemini_config = None
-            if kokoro_entry:
-                kokoro_models_dir = voice_model_files.lane_dir("kokoro")
-                model_filename = kokoro_entry["model"]
-                voices_filename = kokoro_entry.get("voices_file", "voices-v1.0.bin")
-                k_model_path = kokoro_models_dir / model_filename
-                k_voices_path = kokoro_models_dir / voices_filename
-                k_presets_raw = kokoro_entry.get("synthesis_presets") or {}
-                k_presets = {
-                    name: KokoroPreset(
-                        speed=float(spec.get("speed", 1.0)),
-                        sentence_silence=float(spec.get("sentence_silence", 0.2)),
-                    )
-                    for name, spec in k_presets_raw.items()
-                }
-                k_mix_raw = kokoro_entry.get("mix") or {}
-                k_mix = {str(vid): float(weight) for vid, weight in k_mix_raw.items()}
-                if not k_mix:
-                    log.warning("voice: Kokoro entry has empty `mix` — synthesis will fail")
-                kokoro_config = KokoroTTSConfig(
-                    model_path=k_model_path,
-                    voices_path=k_voices_path,
-                    mix=k_mix,
-                    lang=str(kokoro_entry.get("lang", "en-gb")),
-                    device=str(kokoro_entry.get("device", "cuda")),
-                    sample_rate=int(kokoro_entry.get("sample_rate", 24000)),
-                    presets=k_presets,
-                    preload=bool(kokoro_entry.get("preload", False)),
-                    timeout_seconds=float(kokoro_entry.get("timeout_seconds", 60.0)),
+        def _gemini_tts_lane_config(entry: dict) -> "GeminiTTSConfig":
+            g_presets_raw = entry.get("synthesis_presets") or {}
+            g_presets = {
+                name: GeminiPreset(
+                    style=str(spec.get("style", "")),
+                    pace=str(spec.get("pace", "")),
                 )
-            if gemini_tts_entry:
-                g_presets_raw = gemini_tts_entry.get("synthesis_presets") or {}
-                g_presets = {
-                    name: GeminiPreset(
-                        style=str(spec.get("style", "")),
-                        pace=str(spec.get("pace", "")),
-                    )
-                    for name, spec in g_presets_raw.items()
-                }
-                gemini_config = GeminiTTSConfig(
-                    model=gemini_tts_entry["model"],
-                    api_key_env=gemini_tts_entry["api_key_env"],
-                    base_url=gemini_tts_entry["base_url_override"],
-                    voice=gemini_tts_entry["voice"],
-                    timeout_seconds=float(gemini_tts_entry["timeout_seconds"]),
-                    sample_rate=int(gemini_tts_entry["sample_rate"]),
-                    audio_profile=str(gemini_tts_entry.get("audio_profile", "")),
-                    presets=g_presets,
+                for name, spec in g_presets_raw.items()
+            }
+            config = GeminiTTSConfig(
+                model=entry["model"],
+                api_key_env=entry["api_key_env"],
+                base_url=entry["base_url_override"],
+                voice=entry["voice"],
+                timeout_seconds=float(entry["timeout_seconds"]),
+                sample_rate=int(entry["sample_rate"]),
+                audio_profile=str(entry.get("audio_profile", "")),
+                presets=g_presets,
+            )
+            if not os.environ.get(config.api_key_env):
+                # Built anyway. The lane is the operator's stated chain
+                # and a key can arrive without a restart, so refusing to
+                # construct it would make the setup form's "add a key
+                # later" path a lie. Said once at boot, because a cloud
+                # voice that cannot authenticate is the difference
+                # between a quiet machine and a broken one.
+                log.warning(
+                    "voice: cloud TTS lane %s is configured but %s is not "
+                    "set — it will fail at the first sentence",
+                    entry.get("ref"), config.api_key_env,
                 )
-                if not os.environ.get(gemini_config.api_key_env):
-                    # Built anyway. The lane is the operator's stated chain
-                    # and a key can arrive without a restart, so refusing to
-                    # construct it would make the setup form's "add a key
-                    # later" path a lie. Said once at boot, because a cloud
-                    # voice that cannot authenticate is the difference
-                    # between a quiet machine and a broken one.
-                    log.warning(
-                        "voice: cloud TTS lane %s is configured but %s is not "
-                        "set — it will fail at the first sentence",
-                        gemini_tts_entry.get("ref"),
-                        gemini_config.api_key_env,
-                    )
+            return config
+
+        # A lane is built for every materialised chain entry this build
+        # knows how to drive, keyed by its own catalog id and in chain
+        # order — not just the first kokoro entry and the first eligible
+        # gemini one. `TTSEngine.speak` walks `provider_key` and then every
+        # lane in `lanes` in that order, so a chain naming two lanes off one
+        # provider (two gemini voices, say) is a fallback pair once this
+        # loop hands both of them over, rather than the second going
+        # unbuilt with nothing said about why.
+        #
+        # A KeyError inside a lane's own config build still reaches the
+        # `except Exception` below and costs the whole subsystem — that is
+        # unchanged from before this loop existed. What changed is only
+        # which entries get a config built at all: every one this function
+        # knows how to drive, not the first of each kind.
+        lanes: dict[str, TTSLane] = {}
+        for entry in tts_chain:
+            key = entry.get("provider", "")
+            adapter = entry.get("adapter")
+            if not key:
+                continue
+            if adapter == "kokoro":
+                lanes[key] = TTSLane(adapter=adapter, config=_kokoro_lane_config(entry))
+            elif adapter == "gemini" and entry.get("base_url_override") and entry.get("voice"):
+                lanes[key] = TTSLane(adapter=adapter, config=_gemini_tts_lane_config(entry))
+            elif adapter == "gemini":
+                log.warning(
+                    "voice: TTS ref=%s names the gemini adapter but carries no "
+                    "`base_url_override`/`voice` — lane not built",
+                    entry.get("ref"),
+                )
+            else:
+                log.warning(
+                    "voice: TTS ref=%s names the %s adapter, which this build "
+                    "does not know how to drive as a speaking lane — lane not "
+                    "built",
+                    entry.get("ref"), adapter,
+                )
+
+        if lanes:
             # Every key comes off the chain entry that produced the
             # config — no defaults. A lane with no entry has no config
             # and no key, so the engine skips it by construction.
@@ -3165,8 +3235,9 @@ def _build_voice_runtime(app: web.Application) -> None:
             # all, and raising would cost them the whole voice subsystem over a
             # recovery knob. Loud, and back to the old behaviour for that lane.
             lane_cooldowns: dict[str, float] = {}
-            for entry in (kokoro_entry, gemini_tts_entry):
-                if not entry:
+            for entry in tts_chain:
+                key = entry.get("provider", "")
+                if key not in lanes:
                     continue
                 if "lane_cooldown_seconds" not in entry:
                     log.warning(
@@ -3177,15 +3248,7 @@ def _build_voice_runtime(app: web.Application) -> None:
                         entry.get("ref"), MAX_CONSECUTIVE_FAILURES,
                     )
                     continue
-                lane_cooldowns[entry["provider"]] = float(entry["lane_cooldown_seconds"])
-            lanes = {}
-            for adapter, entry, lane_config in (
-                ("kokoro", kokoro_entry, kokoro_config),
-                ("gemini", gemini_tts_entry, gemini_config),
-            ):
-                key = (entry or {}).get("provider", "")
-                if key:
-                    lanes[key] = TTSLane(adapter=adapter, config=lane_config)
+                lane_cooldowns[key] = float(entry["lane_cooldown_seconds"])
             app["tts_engine"] = TTSEngine(
                 cost_ledger=ledger,
                 lanes=lanes,
@@ -3198,12 +3261,18 @@ def _build_voice_runtime(app: web.Application) -> None:
             # the operator explicitly opted in via catalog `preload`).
             # A fallback lane stays cold so a cloud-primary loadout doesn't
             # pay Kokoro's CUDA-DLL preload cost for a model it may never
-            # use. First use loads the cold lane lazily.
+            # use. First use loads the cold lane lazily. Only Kokoro's
+            # lane warms here — the local model pays ONNX init latency a
+            # cloud lane does not.
             primary_tts_adapter = tts_chain[0].get("adapter")
+            kokoro_entry = next(
+                (e for e in tts_chain if e.get("adapter") == "kokoro" and e.get("provider") in lanes),
+                None,
+            )
             if (
                 app["tts_engine"] is not None
-                and kokoro_config is not None
-                and (primary_tts_adapter == "kokoro" or kokoro_config.preload)
+                and kokoro_entry is not None
+                and (primary_tts_adapter == "kokoro" or kokoro_entry.get("preload"))
             ):
                 _queue_serial_warmup(app, app["tts_engine"].warm_up_kokoro(), name="kokoro")
     except Exception:

@@ -18,6 +18,7 @@ from tesseract.brain.boot import adapter_unavailable_reason, load_bundle
 from tesseract.brain.cost.ledger import CostLedger
 from tesseract.brain.cost.metered_adapter import meter_chain
 from tesseract.brain.lazy_adapter import LazyAdapter
+from tesseract.brain.request_size import declared_schema_divisor
 from tesseract.config.loader import (
     ConfigError,
     ResolvedRef,
@@ -76,6 +77,7 @@ def _options_for_ref(ref: ResolvedRef, role_name: str) -> AdapterOptions:
         reasoning_effort=str(fields.get("reasoning_effort", "")),
         use_responses_api=bool(fields.get("use_responses_api", False)),
         prompt_cache_explicit=bool(fields.get("prompt_cache_explicit", False)),
+        schema_chars_per_token=declared_schema_divisor(fields, where),
         stream=bool(fields.get("stream", True)),
         # The connection's own cap, carried so a caller that wraps the call in
         # a wait can use the number the catalog gave instead of one of its

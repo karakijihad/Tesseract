@@ -1,37 +1,45 @@
 """skill_create tool — draft a new markdown skill under workspace/skills/.
 
-Mirror of `agent_create`. The assistant (or a delegate) drafts a skill for a
-repeated chore or a way of doing something that worked, declaring the
-procedure contract (`brain/skills.py::CONTRACT_KEYS`): the shape of problem
-it answers, the steps and the tool each one uses, what done looks like. A
-field left unset is a gap `playbook_contract.gaps_for_skill` reports, never a
-reason the write is refused (ruling 12: one kind, and a file that declares
-none of the contract still loads). Attended sessions get the posture
-`permissions.yaml` sets for the mode (`ask` where the operator keeps the
-decision, `auto` where they gave it away); unattended, the executor's
-quarantine-write carve-out (`headless_quarantine_write` ClassVar, honored by
-`permissions/decide.py` from the CLASS only) lets the call proceed because the
-only write target is the uninvokable quarantine below.
+Mirror of `agent_create`. A skill is for a procedure that will come again,
+never a one-off task and never general advice: the assistant (or a delegate)
+writes down the shape of problem it answers, the exact situation that calls
+for it, the steps and the tool each one uses, and what done looks like
+(`brain/skills.py::CONTRACT_KEYS`). A field left unset is a gap
+`playbook_contract.gaps_for_skill` reports, never a reason the write is
+refused: a file that declares none of the contract still loads. Attended
+sessions get the posture `permissions.yaml` sets for the mode (`ask` where
+the operator keeps the decision, `auto` where they gave it away); unattended,
+the executor's quarantine-write carve-out (`headless_quarantine_write`
+ClassVar, honored by `permissions/decide.py` from the CLASS only) lets the
+call proceed because the only write target is the uninvokable quarantine
+below.
 
-**Every skill is refused at the door, not after the operator has read it.**
-The contract is checked before the write (`playbook_contract.gaps_for_skill`
-with the live registry): a step naming a tool the runtime does not have or
-one the skill itself forbids, a status outside the vocabulary. The version
-gap cannot fire here any more, because a created skill is stamped `1` by
-`render_skill_markdown` rather than taking one from the caller. And any field
-naming a credential-bearing path or a
-path outside the home tree is refused outright, because a generated
-procedure is untrusted until checked and the operator should never be handed
-one that can only do harm.
+A skill is live and carried the moment it goes through: on its own where this
+tool's posture resolves to auto, or on its approved `skill_approval` card
+otherwise. Nothing waits for a second use to matter, so use it on the task in
+front of you as soon as it lands.
+
+`origin` says who is behind the draft, and is carried onto the proposal card:
+`agent` (the default) is the assistant acting on its own judgement that
+something just worked and will come again; `operator` is the assistant
+drafting because the operator asked for it in words; `observer` is the
+assistant agreeing with a skill nudge the observer raised
+(`agents/observer.md`'s third job) and drafting it, which OPERATING.md tells
+it to do with this same tool rather than on the observer's say-so alone.
+
+Every write goes through the one door (`brain/skill_door.py::create_skill`):
+it refuses before the write when the playbook cannot run (a step naming a
+tool the runtime lacks or one the playbook forbids), when any field names a
+credential-bearing path or a path outside the home tree, when the name is
+already active, pending or rejected, or when the proposed steps already match
+an existing skill's exactly. The door also writes the draft, files the
+proposal card, and promotes it where the posture allows — this tool only
+builds the draft and translates the door's answer into a result.
 
 Quarantine: the skill is written to `workspace/skills/pending/<name>/SKILL.md`,
 NOT directly to the active tree. `brain/skills.py::load_skills` skips
 `pending/`, so a drafted skill never appears in the prompt manifest until the
-operator promotes it (`skill_promote` or the Workspace `skill_approval` card).
-
-Every successful draft files a `skill_approval` WorkspaceEvent — the operator's
-proposal card in the Mirror Inbox. The pending file is canonical; the card is
-best-effort.
+operator approves its `skill_approval` card.
 
 Writes: workspace/skills/pending/<name>/SKILL.md + a skill_approval event.
 Never edits or deletes existing skills.
@@ -40,45 +48,37 @@ Never edits or deletes existing skills.
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Literal, Optional
 
-import yaml
 from pydantic import BaseModel, Field
 
-from tesseract.brain.skills import (
-    _FRONTMATTER_RE,
-    SKILL_FILENAME,
-    SKILL_PENDING_DIRNAME,
-    list_pending_skills,
-    list_rejected_skills,
-    list_skills_names,
-    load_skill_folder,
-    read_rejection_reason,
+from tesseract.brain.skill_door import (
+    DraftStep,
+    SkillDraft,
+    create_skill,
+    refuse_playbook,
 )
-from tesseract.config.runtime_limits import (
-    default_runtime_config_path,
-    load_skill_pending_cap,
-)
+from tesseract.brain.skill_door import render_skill_markdown as _door_render_skill_markdown
 from tesseract.kernel.tools.base import PermissionResult, Tool, ToolContext, ToolResult
 from tesseract.kernel.tools.receipt import Receipt
-from tesseract.kernel.tools.skill_promote import promote_pending_skill, promotion_is_auto
-from tesseract.orchestrator.background_event_bus import get_background_bus
-from tesseract.workspace_events import EventStore, WorkspaceEvent
-from tesseract.workspace_events.broadcast import broadcast_workspace_event
+from tesseract.workspace_events import EventStore
 
 logger = logging.getLogger(__name__)
 
 # Agent Skills standard: name ≤ 64 chars, slug-style for the folder.
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 
+# `task_done` is not offered here: it names a scheduled job's own draft, and
+# the tool call this input belongs to is always either a live conversation or
+# a headless agent turn, never the job.
+ToolOrigin = Literal["agent", "operator", "observer"]
+
 
 class PlaybookStep(BaseModel):
     do: str = Field(description="What this step does.")
-    tool: str = Field(default="", description="The tool it uses, or empty for a reasoning step.")
+    tool: str = Field(default="", description="The exact tool it calls. Leave it empty for a step that calls none.")
 
 
 class SkillCreateInput(BaseModel):
@@ -92,10 +92,23 @@ class SkillCreateInput(BaseModel):
         )
     )
     instructions: str = Field(
-        description="The SKILL.md body: the markdown playbook the assistant reads on demand."
+        description=(
+            "The SKILL.md body: the markdown playbook the assistant reads on "
+            "demand. Keep it short; the `steps` carry the procedure, not an essay."
+        )
     )
     rationale: str = Field(
         description="Why this skill is needed. The operator reads this when approving it."
+    )
+    origin: ToolOrigin = Field(
+        default="agent",
+        description=(
+            "Where this draft came from: `agent` if you decided on your own "
+            "that something just worked and will come again; `operator` if "
+            "the operator asked for it in words; `observer` if you are "
+            "acting on a skill nudge from the observer. Recorded on the "
+            "proposal card."
+        ),
     )
     proposer: Literal["entity", "claude", "codex", "user"] = Field(
         default="entity",
@@ -110,30 +123,48 @@ class SkillCreateInput(BaseModel):
     license: str | None = Field(default=None)
     allowed_tools: list[str] | None = Field(
         default=None,
-        description="Agent-Skills `allowed-tools`. Every tool a step uses must be listed here.",
+        description=(
+            "Agent-Skills `allowed-tools`. List exactly the tools the "
+            "`steps` use, no more, no less."
+        ),
     )
     # The procedure contract. A field left unset here is a gap
     # `playbook_contract` reports, not a reason the write is refused.
     trigger: str | None = Field(
         default=None,
         description=(
-            "The shape of problem this answers, in the operator's words, e.g. "
-            "'a brief on a topic, sent to the phone'."
+            "The specific situation this answers, in the operator's words, e.g. "
+            "'a brief on a topic, sent to the phone'. Not a general category."
         ),
     )
-    use_when: str | None = Field(default=None, description="When to reach for it.")
-    not_when: str | None = Field(default=None, description="When not to, even if it looks close.")
+    use_when: str | None = Field(
+        default=None,
+        description="The specific situation to reach for this skill, not a general category.",
+    )
+    not_when: str | None = Field(
+        default=None,
+        description=(
+            "Name the nearest sibling skill this must not be confused with, "
+            "and what makes this one the wrong pick for it."
+        ),
+    )
     preconditions: list[str] | None = Field(
         default=None, description="What must be true before step one. May be empty.",
     )
     steps: list[PlaybookStep] | None = Field(
-        default=None, description="Ordered steps, each naming the tool it uses, or none.",
+        default=None,
+        description=(
+            "Ordered steps. Each says what to do and names the exact tool it "
+            "calls, or leaves `tool` empty for a step that calls none."
+        ),
     )
     forbidden_tools: list[str] | None = Field(
-        default=None, description="Tools this playbook must never use. May be empty.",
+        default=None,
+        description="Tools this playbook must never use, only for a real hazard. Leave empty otherwise.",
     )
     expected_result: str | None = Field(
-        default=None, description="What done looks like, so a run can be graded.",
+        default=None,
+        description="What done looks like, worded so a run can be checked against it.",
     )
     failure_modes: list[str] | None = Field(
         default=None, description="What goes wrong and what to do instead. May be empty.",
@@ -158,16 +189,22 @@ class SkillCreateTool(Tool):
     headless_quarantine_write: ClassVar[bool] = True
 
     group: ClassVar[str] = "extending-yourself"
-    summary: ClassVar[str] = "Draft a new skill or playbook into the pending quarantine."
+    summary: ClassVar[str] = "Write a new skill; it is live and carried once made or approved."
     use_when: ClassVar[str] = (
-        "Use to write down a brand-new skill for a repeated chore, or a "
-        "playbook once a way of doing something has worked: give `trigger`, "
-        "`use_when`, the `steps` with their tools and `expected_result`. "
-        "Writes to skills/pending/ and files a card; live once promoted."
+        "Use for a procedure you expect to need again, never a one-off task "
+        "and never general advice. Give `trigger` and `use_when` naming the "
+        "exact situation that calls for it, `not_when` naming the nearest "
+        "sibling skill this must not be confused with, `steps` each saying "
+        "what to do and naming the exact tool it calls (leave `tool` empty "
+        "for a step that calls none), `allowed_tools` listing exactly the "
+        "tools the steps use, and a checkable `expected_result`. Also use "
+        "this to act on an observer skill nudge, with `origin: observer`. It "
+        "goes live and carried as soon as it is made or approved, so use it "
+        "on the task in front of you."
     )
     not_when: ClassVar[str] = (
-        "to activate a drafted skill, use `skill_promote`; to improve an "
-        "existing active skill, use `skill_refine`."
+        "for a one-off task, or advice with no procedure to repeat; to "
+        "improve an existing active skill, use `skill_refine` instead."
     )
     depends_on: ClassVar[str] = ""
     receipt_kind: ClassVar[str] = "record"
@@ -223,7 +260,7 @@ class SkillCreateTool(Tool):
             else SkillCreateInput(**tool_input.model_dump())
         )
 
-        # --- Validation (before any write) ---
+        # --- Validation the door does not own: shape, not policy ---
         if not _NAME_RE.match(inp.name):
             return ToolResult(
                 output=(
@@ -240,290 +277,84 @@ class SkillCreateTool(Tool):
                 caller_error=True,
             )
 
-        if inp.name in list_skills_names(self._skills_dir):
-            return ToolResult(
-                output=f"Skill {inp.name!r} already exists in {self._skills_dir}.",
-                is_error=True,
-                caller_error=True,
-            )
-        if inp.name in list_pending_skills(self._skills_dir):
-            return ToolResult(
-                output=(
-                    f"Skill {inp.name!r} already pending promotion in "
-                    f"{self._skills_dir}/{SKILL_PENDING_DIRNAME}/. Promote or remove it first."
-                ),
-                is_error=True,
-                caller_error=True,
-            )
-        if inp.name in list_rejected_skills(self._skills_dir):
-            reason = read_rejection_reason(self._skills_dir, inp.name)
-            return ToolResult(
-                output=(
-                    f"Skill {inp.name!r} was previously rejected by the operator"
-                    + (f": {reason}" if reason else ".")
-                    + " Address the rejection before re-proposing, or pick a different name."
-                ),
-                is_error=True,
-                caller_error=True,
-            )
-
-        # Headless flood guard — UNATTENDED drafts are capped by
-        # runtime.yaml::skill_pending_cap. Attended drafts went through the
-        # operator's ASK and stay uncapped.
-        if context.ask_fn is None:
-            cap = load_skill_pending_cap(default_runtime_config_path())
-            pending_now = len(list_pending_skills(self._skills_dir))
-            if pending_now >= cap:
-                return ToolResult(
-                    output=(
-                        f"skills/pending/ already holds {pending_now} drafts "
-                        f"(cap {cap}). Ask the operator to review the open "
-                        "proposal cards before proposing more skills."
-                    ),
-                    is_error=True,
-                    caller_error=True,
-                )
-
-        # --- Render + round-trip validation ---
-        rendered = render_skill_markdown(inp)
-        roundtrip_error = _validate_roundtrip(rendered, inp.name)
-        if roundtrip_error:
-            return ToolResult(
-                output=f"Rendered SKILL.md failed loader round-trip: {roundtrip_error}",
-                is_error=True,
-                caller_error=True,
-            )
-        refused = refuse_playbook(rendered, inp.name, self._tool_names())
-        if refused:
-            return ToolResult(output=refused, is_error=True, caller_error=True)
-
-        # --- Atomic write to quarantine ---
-        pending_dir = self._skills_dir / SKILL_PENDING_DIRNAME / inp.name
-        pending_dir.mkdir(parents=True, exist_ok=True)
-        skill_path = pending_dir / SKILL_FILENAME
-        try:
-            _atomic_write(skill_path, rendered)
-        except OSError as exc:
-            return ToolResult(output=f"Failed to write skill file: {exc}", is_error=True)
-
-        try:
-            get_background_bus().publish(
-                "SkillCreated", {"skill": inp.name, "proposer": inp.proposer},
-            )
-        except Exception:
-            logger.warning("skill_create: bus publish failed for %s", inp.name, exc_info=True)
-
-        # File the proposal card. The pending write above is canonical; the
-        # card is best-effort (never let a notification failure lose the file).
-        card_note = ""
-        if self._event_store is not None:
-            event = WorkspaceEvent.new(
-                kind="skill_approval",
-                source="agent",
-                title=f"Skill proposal: {inp.name}",
-                summary=inp.rationale,
-                payload={
-                    "name": inp.name,
-                    "description": inp.description,
-                    "rationale": inp.rationale,
-                    "proposer": inp.proposer,
-                    "rendered_markdown": rendered,
-                    "session_id": context.session_id,
-                },
-            )
-            try:
-                self._event_store.append_event(event)
-                card_note = f"\nProposal card filed in the Workspace Inbox ({event.event_id})."
-            except Exception:
-                logger.exception("skill_create: proposal event failed for %s", inp.name)
-                card_note = (
-                    "\nWARNING: the proposal card could not be filed in the "
-                    "Workspace Inbox. Post a workspace_post note so the "
-                    "operator knows this skill is pending."
-                )
-            else:
-                try:
-                    if self._app_provider is not None:
-                        app = self._app_provider()
-                        if app is not None:
-                            await broadcast_workspace_event(app, event)
-                except Exception:
-                    logger.warning(
-                        "skill_create: card broadcast failed for %s",
-                        inp.name, exc_info=True,
-                    )
-
-        logger.info("Skill created (pending): %s (%s)", inp.name, skill_path)
-
-        # Attended, and the file says a promotion needs no hand: promote now,
-        # so a draft does not sit in pending waiting for a card nobody is
-        # asked to read. Unattended stays in quarantine whatever the file
-        # says, which is the carve-out that let the write happen at all.
-        if context.ask_fn is not None and promotion_is_auto(self._registry_provider()):
-            entry, err = promote_pending_skill(self._skills_dir, inp.name)
-            if err is None and entry is not None:
-                self._settle_card(inp.name)
-                return ToolResult(
-                    output=(
-                        f"Created and activated skill: {inp.name}\n"
-                        f"File: {self._skills_dir / inp.name / SKILL_FILENAME}\n\n"
-                        "Promotion needs no approval in this mode, so it is live "
-                        "now and listed in your prompt from the next turn." + card_note
-                    ),
-                    receipt=Receipt(
-                        kind="record",
-                        id=inp.name,
-                        locator=str(
-                            self._skills_dir / inp.name / SKILL_FILENAME
-                        ),
-                    ),
-                )
-            logger.warning("skill_create: auto promotion of %s failed: %s", inp.name, err)
-
-        return ToolResult(
-            output=(
-                f"Created skill (pending promotion): {inp.name}\n"
-                f"File: {skill_path}\n\n"
-                "The skill is quarantined: it does not appear in the prompt "
-                "manifest until the operator promotes it (`skill_promote` or "
-                "the Workspace proposal card)." + card_note
-            ),
-            receipt=Receipt(kind="record", id=inp.name, locator=str(skill_path)),
+        result = await create_skill(
+            _draft_from_input(inp),
+            skills_dir=self._skills_dir,
+            origin=inp.origin,
+            attended=context.ask_fn is not None,
+            event_store=self._event_store,
+            app_provider=self._app_provider,
+            tool_names=self._tool_names(),
+            registry=self._registry_provider(),
+            card_title=f"Skill proposal: {inp.name}",
+            card_summary=inp.rationale,
+            card_extra={"proposer": inp.proposer, "session_id": context.session_id},
         )
 
-    def _settle_card(self, name: str) -> None:
-        """Mark the just-filed proposal card approved, so the inbox does not
-        offer a decision that has already been taken."""
-        if self._event_store is None:
-            return
-        try:
-            for ev in self._event_store.list_events(kinds=("skill_approval",), status="pending"):
-                if (ev.payload or {}).get("name") == name:
-                    self._event_store.update_event_status(
-                        ev.event_id, "approved", reason="promoted on its own: skill_promote is auto in this mode"
-                    )
-        except Exception:
-            logger.warning("skill_create: could not settle the card for %s", name, exc_info=True)
+        if result.status.startswith("refused"):
+            return ToolResult(
+                output=result.reason,
+                is_error=True,
+                caller_error=result.status not in ("refused_write", "refused_card"),
+            )
+
+        if result.status == "created_active":
+            return ToolResult(
+                output=(
+                    f"Created and activated skill: {result.name}\n"
+                    f"File: {result.folder / 'SKILL.md'}\n\n"
+                    "Promotion needs no approval in this mode, so it is live "
+                    "now, carried, and listed in your prompt from the next "
+                    "turn." + result.card_note
+                ),
+                receipt=Receipt(kind="record", id=result.name, locator=str(result.folder / "SKILL.md")),
+            )
+
+        # "created_pending" (and "supported", which a tool call never
+        # actually reaches — that outcome is `task_done`-only).
+        return ToolResult(
+            output=(
+                f"Created skill (pending promotion): {result.name}\n"
+                f"File: {result.folder / 'SKILL.md'}\n\n"
+                "The skill is quarantined: it does not appear in the prompt "
+                "manifest until the operator approves its Workspace "
+                "proposal card." + result.card_note
+            ),
+            receipt=Receipt(kind="record", id=result.name, locator=str(result.folder / "SKILL.md")),
+        )
 
 
 # ─── Helpers ─────────────────────────────────────────────
 
 
+def _draft_from_input(inp: SkillCreateInput) -> SkillDraft:
+    """The door's own draft shape, off this tool's pydantic input."""
+    return SkillDraft(
+        name=inp.name,
+        description=inp.description,
+        instructions=inp.instructions,
+        rationale=inp.rationale,
+        proposer=inp.proposer,
+        license=inp.license,
+        allowed_tools=tuple(inp.allowed_tools or []),
+        trigger=inp.trigger or "",
+        use_when=inp.use_when or "",
+        not_when=inp.not_when or "",
+        preconditions=tuple(inp.preconditions or []),
+        steps=tuple(DraftStep(do=s.do, tool=s.tool) for s in (inp.steps or [])),
+        forbidden_tools=tuple(inp.forbidden_tools or []),
+        expected_result=inp.expected_result or "",
+        failure_modes=tuple(inp.failure_modes or []),
+        evidence=tuple(inp.evidence or []),
+        confidence=inp.confidence,
+    )
+
+
 def render_skill_markdown(inp: SkillCreateInput) -> str:
-    """Render the full SKILL.md content. Frontmatter aligned to the Agent
-    Skills standard (name/description required) plus the procedure contract,
-    written whole (ruling 12): every contract key is written, empty where the
-    author gave nothing, so the contract reports "declared and empty" rather
-    than "missing" and the file reads as a whole declaration. Pure function.
-    """
-    fm: dict[str, Any] = {"name": inp.name, "description": inp.description}
-    # A skill's version is an ordering key, so it is the runtime's and not
-    # the author's: `keep_predecessor` archives under it and refuses anything
-    # that does not sort above the live one. This tool CREATES, and a created
-    # skill is the first revision. Reading `inp.version` here coerced a
-    # semantic one to "1" without saying so, which put a revision of a v3
-    # skill below its own predecessor.
-    fm["version"] = "1"
-    fm["status"] = "draft"
-    if inp.license:
-        fm["license"] = inp.license
-    fm["allowed-tools"] = list(inp.allowed_tools or [])
-    fm["trigger"] = inp.trigger or ""
-    fm["use_when"] = inp.use_when or ""
-    fm["not_when"] = inp.not_when or ""
-    fm["preconditions"] = list(inp.preconditions or [])
-    # `steps` is the one contract key whose empty declaration BLOCKS the
-    # write outright (`playbook_contract.gaps_for_skill`: "names nothing to
-    # do"), so, unlike every other field above and below, it is written only
-    # when the caller actually gave steps. A caller who gives none is a skill
-    # with nothing to run yet, which is honestly "not declared", not "declared
-    # and refused".
-    if inp.steps:
-        fm["steps"] = [
-            {"do": step.do, **({"tool": step.tool} if step.tool else {})}
-            for step in inp.steps
-        ]
-    fm["forbidden-tools"] = list(inp.forbidden_tools or [])
-    fm["expected_result"] = inp.expected_result or ""
-    fm["failure_modes"] = list(inp.failure_modes or [])
-    fm["evidence"] = list(inp.evidence or [])
-    fm["confidence"] = inp.confidence
-    front = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-    return f"---\n{front}\n---\n\n{inp.instructions.strip()}\n"
-
-
-def refuse_playbook(rendered: str, name: str, tool_names: frozenset[str] | None) -> str | None:
-    """Why a rendered SKILL.md may not be written, or None. Runs on every
-    skill (ruling 12): the blocking-gap check and the credential/path scan
-    below apply whether or not the file declared the contract."""
-    from tesseract.brain.playbook_contract import gaps_for_skill
-    from tesseract.kernel.tools._path_door import refuse_paths
-    from tesseract.paths import home_dir
-
-    tmp_root = Path(tempfile.mkdtemp())
-    folder = tmp_root / name
-    folder.mkdir(parents=True, exist_ok=True)
-    try:
-        (folder / SKILL_FILENAME).write_text(rendered, encoding="utf-8")
-        entry = load_skill_folder(folder)
-    finally:
-        try:
-            (folder / SKILL_FILENAME).unlink(missing_ok=True)
-            folder.rmdir()
-            tmp_root.rmdir()
-        except OSError:
-            pass
-    if entry is None:
-        return None
-
-    blocking = [g for g in gaps_for_skill(entry, tool_names=tool_names) if g.blocking]
-    if blocking:
-        return "Refused, this playbook cannot run: " + "; ".join(
-            f"{g.field} {g.detail}" for g in blocking
-        )
-
-    # Every field a person or a model wrote, the body included: the body is
-    # what the assistant reads and follows, so a path there is the one that
-    # matters most, and the description is what every prompt shows. The
-    # judgment is `_path_door`'s, one module that knows every path shape and
-    # judges by the string rather than by the host.
-    texts = [entry.description, entry.trigger, entry.use_when, entry.not_when, entry.expected_result]
-    texts += list(entry.preconditions) + list(entry.failure_modes)
-    texts += [step.do for step in entry.steps]
-    texts.append(_FRONTMATTER_RE.sub("", rendered, count=1))
-    return refuse_paths(texts, home_dir())
-
-
-def _validate_roundtrip(rendered: str, name: str) -> str | None:
-    """Write rendered SKILL.md to a temp folder, load via the skills loader,
-    confirm it parses with the expected name. Returns an error message or None."""
-    tmp_root = Path(tempfile.mkdtemp())
-    folder = tmp_root / name
-    folder.mkdir(parents=True, exist_ok=True)
-    try:
-        (folder / SKILL_FILENAME).write_text(rendered, encoding="utf-8")
-        entry = load_skill_folder(folder)
-        if entry is None:
-            return "loader rejected the rendered SKILL.md (frontmatter/size)."
-        if entry.name != name:
-            return f"frontmatter name {entry.name!r} does not match folder {name!r}."
-        return None
-    except Exception as exc:  # noqa: BLE001
-        return str(exc)
-    finally:
-        try:
-            (folder / SKILL_FILENAME).unlink(missing_ok=True)
-            folder.rmdir()
-            tmp_root.rmdir()
-        except OSError:
-            pass
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content to path atomically via a .tmp intermediate."""
-    tmp_path = path.with_suffix(".md.tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    os.replace(str(tmp_path), str(path))
+    """Render the full SKILL.md content, via the door. Kept here — rather
+    than only in `skill_door`, which works over its own `SkillDraft` — because
+    this tool's callers hold a `SkillCreateInput`."""
+    return _door_render_skill_markdown(_draft_from_input(inp))
 
 
 def description_for_approval(inp: SkillCreateInput) -> str:

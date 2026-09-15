@@ -7,6 +7,7 @@ from tesseract.orchestrator.turns.context import (
     turn_identity,
 )
 from tesseract.orchestrator.turns.manifest import (
+    CONTINUATION_PENDING_REASON,
     SHUTDOWN_NOTICE,
     TurnManifestStore,
     TurnRecorder,
@@ -29,6 +30,7 @@ from tesseract.orchestrator.turns.manifest import (
 )
 
 __all__ = [
+    "CONTINUATION_PENDING_REASON",
     "SHUTDOWN_NOTICE",
     "TurnIdentity",
     "enter_turn",

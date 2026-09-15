@@ -12,8 +12,8 @@ a channel-shaped digest.
 a verdict.** At the volumes this machine produces, four observations against
 four move a rate by 25 points, and a playbook is consulted on the hard tasks
 and skipped on the easy ones, so nothing on disk holds the counterfactual. So
-the rows are shown and the hand decides. `playbook_judge` is where the hand is
-given.
+the rows are shown and the hand decides. `skill_refine`'s `retire` action is
+where the hand is given, and only the operator's answer to it decides.
 
 **`turn_calls` and `turn_cost_usd` are the turn's, not the playbook's.** A turn
 does the work the playbook describes and everything else the turn was for, and

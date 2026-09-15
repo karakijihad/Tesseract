@@ -256,9 +256,57 @@ def wire_entries_for(registry: Any, enabled_extended: set[str] | None) -> list[d
         return []
 
 
+def declared_schema_divisor(fields: Any, where: str) -> float | None:
+    """A catalog entry's `schema_chars_per_token`, or `None` when it has none.
+
+    Absent is a statement, not a gap to fill: the model has not been measured,
+    and the reader then prices schemas as prose and says so. Present and not a
+    positive number raises, because a wrong figure here is a wrong boundary.
+    """
+    raw = (fields or {}).get("schema_chars_per_token")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        raise ValueError(
+            f"{where}: schema_chars_per_token must be a positive number, got {raw!r}"
+        )
+    return float(raw)
+
+
+def chat_brain_schema_divisor() -> float | None:
+    """What the chat brain's first model declares, for readers with no session.
+
+    The payload panel and the Conscience route price a turn without holding a
+    `ChatSession`, so they ask the catalog for the model a turn would ride.
+    `None` when the catalog cannot say, which prices schemas as prose.
+
+    A figure that is not a number is logged as an error and read as `None`
+    rather than raised: these readers build every surface's reading at once,
+    and one bad catalog value must cost the tools figure its precision, not
+    take every reading down with it. Boot still refuses the same value.
+    """
+    try:
+        from tesseract.brain.boot import load_bundle
+
+        role = load_bundle().roles.get("chat_brain")
+    except Exception:
+        log.warning("request size: the catalog would not load", exc_info=True)
+        return None
+    ref = getattr(role, "primary", None)
+    if ref is None:
+        return None
+    try:
+        return declared_schema_divisor(ref.model.fields, f"providers.yaml entry for {ref.ref}")
+    except ValueError:
+        log.error("request size: pricing schemas as prose", exc_info=True)
+        return None
+
+
 __all__ = [
     "RequestSize",
     "ToolArraySize",
+    "chat_brain_schema_divisor",
+    "declared_schema_divisor",
     "measure",
     "measure_tools",
     "tokens_from_chars",

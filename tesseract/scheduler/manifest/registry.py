@@ -123,27 +123,6 @@ ROWS: tuple[Entry, ...] = (
         kind=Kind.DETERMINISTIC,
         owner=Owner.RUNTIME,
     ),
-    Entry(
-        name="skill_refinement",
-        runs=Runs.ROW,
-        summary=(
-            "Reads how your skills have been performing and offers a rewrite of "
-            "one whose work you keep having to correct afterwards. It judges "
-            "the version that is live now, never one you have already replaced, "
-            "and it shows you what it measured. A skill whose file will not "
-            "read is flagged separately, because no rewrite fixes that. A "
-            "playbook revision that did worse than the one before it is "
-            "retired, and the earlier one is kept to return to."
-        ),
-        why=(
-            "A skill that quietly misleads the assistant goes on misleading it. "
-            "Without this, the usage log records that and nobody reads it, and a "
-            "revision that made a playbook worse stays the one it reaches for."
-        ),
-        kind=Kind.REMOTE_MODEL,
-        chains=("chain_1",),
-        owner=Owner.HOME,
-    ),
 )
 
 # ── Services: loops that run for as long as the app does. ──
@@ -595,21 +574,6 @@ TRIGGERS: tuple[Entry, ...] = (
             "and you decide."
         ),
         kind=Kind.DETERMINISTIC,
-        owner=Owner.HOME,
-    ),
-    Entry(
-        name="skill_suggest",
-        runs=Runs.TRIGGER,
-        summary=(
-            "Reads across recent days of work and points out a task you keep "
-            "repeating that no skill covers yet."
-        ),
-        why=(
-            "The library only grows when somebody notices a repeated shape. It "
-            "never drafts a skill. It says what it saw, and you decide."
-        ),
-        kind=Kind.REMOTE_MODEL,
-        chains=("chain_1",),
         owner=Owner.HOME,
     ),
     Entry(

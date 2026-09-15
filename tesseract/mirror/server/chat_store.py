@@ -299,10 +299,53 @@ def first_operator_text(record: ChatRecord) -> str:
     return ""
 
 
+def _row_from_record(record: ChatRecord) -> dict[str, Any]:
+    """One sidebar row, read straight off a parsed record.
+
+    The shape the derived index exists to avoid computing on every open —
+    ``chat_index._meta_row`` calls back into ``first_operator_text`` and
+    ``_last_active_stamp`` below so the index-served row and this one are the
+    same computation, never a second copy that can drift from it.
+    """
+    born = default_chat_title(record.created_at or "")
+    return {
+        "chat_id": record.chat_id,
+        "title": record.title,
+        "snippet": first_operator_text(record) if record.title == born else "",
+        "created_at": record.created_at,
+        "started_at": record.started_at,
+        "ended_at": record.ended_at,
+        "last_active_at": _last_active_stamp(record),
+        "turn_count": record.turn_count,
+        "model": record.model,
+        "archived": record.archived,
+        "message_count": len(record.history),
+    }
+
+
 def list_chats(
     *, include_archived: bool = False, archived_only: bool = False
 ) -> list[dict[str, Any]]:
     """Return sidebar metadata rows (no history), newest-created first.
+
+    Served from the derived index (``chat_index.headers``) first, so a listing
+    costs one query rather than parsing every transcript in the library.
+    ``None`` means the index has nothing trustworthy to hand back yet — a
+    fresh install, a deleted sqlite file, or a table `chat_index` just
+    migrated out from under an old column set — so this rebuilds it from the
+    records ONCE and asks again; a second ``None`` (nothing on disk, or the
+    index genuinely unreachable) parses the records directly for this one
+    call, which is the only path left that opens a transcript.
+
+    Every invariant the parse path held has to hold here too, because this
+    replaced "parse every file" rather than adding a second listing:
+    - the same 11 keys and values as the parse path, for the same store
+    - the same archived filtering (``_wanted``)
+    - a fresh install / a deleted index / an old-schema index / an
+      unreadable record file all still resolve to a correct listing, never
+      an exception
+    - the files stay canonical; the index is repaired from them, never the
+      other way round
 
     ``snippet`` is present only when the title is still the birth stamp, so a
     reader needs no second rule to know which of the two to show: an operator
@@ -314,22 +357,15 @@ def list_chats(
     newest-CREATED first, because ``chat_restore`` takes the head of this list
     to decide which conversations a connection hydrates.
     """
-    rows: list[dict[str, Any]] = []
-    for record in _walk(include_archived=include_archived, archived_only=archived_only):
-        born = default_chat_title(record.created_at or "")
-        rows.append({
-            "chat_id": record.chat_id,
-            "title": record.title,
-            "snippet": first_operator_text(record) if record.title == born else "",
-            "created_at": record.created_at,
-            "started_at": record.started_at,
-            "ended_at": record.ended_at,
-            "last_active_at": _last_active_stamp(record),
-            "turn_count": record.turn_count,
-            "model": record.model,
-            "archived": record.archived,
-            "message_count": len(record.history),
-        })
+    rows = chat_index.headers(include_archived=include_archived, archived_only=archived_only)
+    if rows is None:
+        rebuild_metadata_index()
+        rows = chat_index.headers(include_archived=include_archived, archived_only=archived_only)
+    if rows is None:
+        rows = [
+            _row_from_record(record)
+            for record in _walk(include_archived=include_archived, archived_only=archived_only)
+        ]
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return rows
 

@@ -89,10 +89,13 @@ def payload_breakdown(
     tool_registry_provider: Callable[[], Any] | None = None,
     workspace_dir: Path | None = None,
     memory_store_dir: Path | None = None,
+    schema_chars_per_token: float | None = None,
 ) -> dict[str, Any]:
     """Assemble one turn's payload and report its composition.
 
-    ``channel_name`` selects the surface — ``None`` is the cockpit. Blocking:
+    ``channel_name`` selects the surface — ``None`` is the cockpit.
+    ``schema_chars_per_token`` is the model's measured figure, or ``None`` to
+    price schemas as prose. Blocking:
     it reads the workspace and the memory store exactly as a turn does, so
     call it off the event loop.
     """
@@ -115,7 +118,8 @@ def payload_breakdown(
     # not a ratio at all. `brain/request_size.py` owns that, and the panel
     # reads it rather than counting a second way.
     tools = request_size.measure_tools(
-        request_size.wire_entries_for(ctx.registry, set())
+        request_size.wire_entries_for(ctx.registry, set()),
+        schema_chars_per_token=schema_chars_per_token,
     )
     schema_chars = tools.wire_chars
 

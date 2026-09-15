@@ -23,6 +23,10 @@ routes:
   # Autonomy is waiting on a decision from you before it can continue.
   awaiting_operator: [telegram]
 
+  # A task finished, and it wants to know whether the work was good, bad, or
+  # not used.
+  task_closed: [telegram]
+
   # What was still open when the app restarted, and what it did about it.
   recovery_summary: [telegram]
 

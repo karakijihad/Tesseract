@@ -691,7 +691,15 @@ def day_rows(
     Wakes carry the row's OWN sentence rather than a word this file chooses.
     `MorningJob` and `WorkdayJob` each write one for every way they stop, and
     re-describing them here would be a second account of the same run.
+
+    A closed step also carries the operator's own key, if one has been
+    pressed: `id` so a surface can post one, `said` for the one already on
+    record. `verdicts.latest()` is read once here rather than per row, the
+    same shape `outcome_ledger.closed_tasks` already reads it in.
     """
+    from tesseract.orchestrator.autonomy import verdicts
+
+    keyed = verdicts.latest()
     return {
         "wakes": [
             {
@@ -713,10 +721,12 @@ def day_rows(
             ],
             "closed": [
                 {
+                    "id": row.get("id"),
                     "goal": row.get("goal"),
                     "project": row.get("project_id"),
                     "status": row.get("status"),
                     "verifiedBy": row.get("verification_by") or "nobody",
+                    "said": keyed.get(str(row.get("id")), {}).get("verdict", ""),
                 }
                 for row in steps.get("closed") or ()
             ],

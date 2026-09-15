@@ -16,11 +16,60 @@
 // should not have to pass the wakes to find it.
 
 import { useEffect } from 'react';
+import { Button } from '../../components/common/Button';
 import { Note } from '../../components/common/Note';
+import { RowActions } from '../../components/common/Row';
 import { Band } from '../../components/common/StateStrip';
+import { Hint } from '../../components/ui/Hint';
 import { clock } from '../../lib/time';
 import { useAutonomyStore } from '../../stores/autonomy';
-import type { DayResponse } from '../../lib/api';
+import type { DayResponse, TaskVerdict } from '../../lib/api';
+
+/** What pressing each key says, read into a `Hint` beside it because none of
+ *  the three words alone says what happens next or that it can be changed. */
+const VERDICT_SAYS: Record<TaskVerdict, string> = {
+  good: 'Counts this task as work you wanted. Press another to change it.',
+  bad: 'Counts this task as work you did not want. Press another to change it.',
+  unused: 'Counts this task as work that went unused. Press another to change it.',
+};
+
+const VERDICT_LABEL: Record<TaskVerdict, string> = {
+  good: 'Good',
+  bad: 'Bad',
+  unused: 'Not used',
+};
+
+const VERDICTS: TaskVerdict[] = ['good', 'bad', 'unused'];
+
+function VerdictKeys({
+  taskId,
+  said,
+  pending,
+  onPick,
+}: {
+  taskId: string;
+  said: TaskVerdict | '';
+  pending: boolean;
+  onPick: (taskId: string, verdict: TaskVerdict) => void;
+}): React.ReactElement {
+  return (
+    <RowActions>
+      {VERDICTS.map((verdict) => (
+        <Hint key={verdict} label={VERDICT_SAYS[verdict]}>
+          <Button
+            tone={verdict === 'good' ? 'good' : verdict === 'bad' ? 'danger' : 'default'}
+            active={said === verdict}
+            disabled={pending}
+            onClick={() => onPick(taskId, verdict)}
+            ariaLabel={`${VERDICT_LABEL[verdict]} for this task`}
+          >
+            {VERDICT_LABEL[verdict]}
+          </Button>
+        </Hint>
+      ))}
+    </RowActions>
+  );
+}
 
 /** What each row is called where a person reads it. The runtime's own names
  *  are `morning` and `workday`; neither is a sentence. */
@@ -33,10 +82,20 @@ export function DayRoomView({
   data,
   status,
   error,
+  pendingIds,
+  onVerdict,
 }: {
   data: DayResponse | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
   error: string | null;
+  /** Task ids with a key in flight, so the row's buttons wait for the
+   *  answer rather than looking like nothing happened. Defaults to none,
+   *  for callers (and tests) that never press one. */
+  pendingIds?: Set<string>;
+  /** Absent renders the "Finished today" rows with no buttons at all,
+   *  which is what a caller with nowhere to send a key wants rather than
+   *  buttons that do nothing when pressed. */
+  onVerdict?: (taskId: string, verdict: TaskVerdict) => void;
 }): React.ReactElement {
   if (status === 'error') {
     return <Note tone="bad">What it did today could not be read. {error}</Note>;
@@ -93,11 +152,23 @@ export function DayRoomView({
           <Band label="Finished today" count={steps.closed.length} />
           <ul className="day-room__steps">
             {steps.closed.map((step, i) => (
-              <li key={`${step.project}:${i}`}>
-                {step.goal}{' '}
-                <span className="t-meta">
-                  {step.project}, {step.status}, checked by {step.verifiedBy}
+              <li key={step.id || `${step.project}:${i}`} className="day-room__step">
+                <span>
+                  {step.goal}{' '}
+                  <span className="t-meta">
+                    {[step.project, step.status, `checked by ${step.verifiedBy}`]
+                      .filter(Boolean)
+                      .join(', ')}
+                  </span>
                 </span>
+                {step.id && onVerdict && (
+                  <VerdictKeys
+                    taskId={step.id}
+                    said={step.said}
+                    pending={pendingIds?.has(step.id) ?? false}
+                    onPick={onVerdict}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -130,6 +201,8 @@ export function DayRoomView({
 export function DayRoom(): React.ReactElement {
   const day = useAutonomyStore((s) => s.day);
   const fetchDay = useAutonomyStore((s) => s.fetchDay);
+  const pendingActions = useAutonomyStore((s) => s.pendingActions);
+  const recordVerdict = useAutonomyStore((s) => s.recordVerdict);
 
   // The rail fills this whether or not the room is open, so opening it is
   // usually free. A room that lands on an empty store asks once.
@@ -137,5 +210,13 @@ export function DayRoom(): React.ReactElement {
     if (day.status === 'idle') void fetchDay();
   }, [day.status, fetchDay]);
 
-  return <DayRoomView data={day.data} status={day.status} error={day.error} />;
+  return (
+    <DayRoomView
+      data={day.data}
+      status={day.status}
+      error={day.error}
+      pendingIds={pendingActions}
+      onVerdict={(taskId, verdict) => void recordVerdict(taskId, verdict)}
+    />
+  );
 }

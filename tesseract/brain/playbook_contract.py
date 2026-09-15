@@ -6,7 +6,7 @@ the declaration is checked at boot rather than discovered when it fires.
 
 Every skill declares the procedure contract in its frontmatter
 (`brain/skills.py::CONTRACT_KEYS`), whether it wrote any of it or not
-(ruling 12). A half-written, or entirely unwritten, contract is a list of
+. A half-written, or entirely unwritten, contract is a list of
 gaps and never a skill that quietly loads as prose.
 
 **Reported, never refused, and the reason is where skills live.** Agent cards

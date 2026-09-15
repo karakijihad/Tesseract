@@ -251,6 +251,12 @@ class AgentDefinition:
     # answer "is this ours or theirs".
     origin: AgentOrigin = "user"
     shadows_system: bool = False
+    # The full merged frontmatter mapping (post-`extends`), for a card whose
+    # policy lives in keys this dataclass has no named field for — the
+    # observer card is the first of these. Top-level only: a shadow overrides
+    # one whole key at a time (`extends` merges frontmatter key-by-key), so a
+    # nested mapping inside one key is not itself overridable field-by-field.
+    raw_frontmatter: dict = field(default_factory=dict)
 
     def get_section(self, section_name: str) -> str:
         """Return section body by name, stripped. Empty string if missing."""
@@ -478,6 +484,7 @@ def load_agent(
         disabled=bool(fm.get("disabled", False)),
         origin=location.origin,
         shadows_system=location.shadows_system,
+        raw_frontmatter=fm,
     )
 
 

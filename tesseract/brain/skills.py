@@ -56,17 +56,20 @@ SKILL_REJECTED_DIRNAME = "rejected"
 SKIP_DIRNAMES = frozenset({SKILL_PENDING_DIRNAME, SKILL_REJECTED_DIRNAME, "__pycache__"})
 
 
-#: The lifecycle a playbook may declare. A revision is `draft` until it has
-#: been used, `active` while it is the one the assistant reaches for, and
-#: `retired` when a later revision replaced it or it measured worse than the
-#: one before. Closed: `playbook_contract` reports anything else.
+#: The lifecycle a playbook may declare. A skill is `active` the moment it
+#: goes live, on its own or on its approved card, and `retired` when a later
+#: revision replaced it or it measured worse than the one before: nothing
+#: decides its way into being live over time, so nothing writes anything in
+#: between. `draft` stays accepted here so an older file still loads; nothing
+#: in this runtime writes it any more. Closed: `playbook_contract` reports
+#: anything else.
 PLAYBOOK_STATUSES = ("draft", "active", "retired")
 
 #: Everything a skill owes: the procedure contract (the shape of problem it
 #: answers, what must hold first, the steps and the tool each one uses, what
 #: done looks like, what goes wrong, its status and the turns it was learned
 #: from) plus the two Agent Skills interop keys. One kind, one contract: a
-#: file declaring none of these still loads (ruling 12) and
+#: file declaring none of these still loads and
 #: `playbook_contract.gaps_for_skill` reports each missing key as a gap
 #: rather than refusing it.
 CONTRACT_KEYS = frozenset({
@@ -228,8 +231,19 @@ def _parse_steps(raw: Any) -> tuple[Step, ...]:
         elif isinstance(item, dict):
             do = _text(item.get("do"))
             if do:
-                steps.append(Step(do=do, tool=_text(item.get("tool"))))
+                steps.append(Step(do=do, tool=_step_tool(item.get("tool"))))
     return tuple(steps)
+
+
+#: What a model writes for a step that calls nothing when it fills the field
+#: rather than leaving it out. YAML reads `none` as a string, so without this
+#: a reasoning step reads as a call to a tool named "none" and blocks the skill.
+_NO_TOOL = frozenset({"none", "null", "n/a", "-"})
+
+
+def _step_tool(raw: Any) -> str:
+    tool = _text(raw)
+    return "" if tool.lower() in _NO_TOOL else tool
 
 
 def _number_or_none(raw: Any) -> float | None:
@@ -308,7 +322,7 @@ def keep_predecessor(folder: Path, live: SkillEntry, proposed: SkillEntry) -> st
     A revision never overwrites its predecessor, because the whole point of a
     version is that a later one which measures worse can be compared against,
     and returned to, a record that still exists. Applies to every skill
-    (ruling 12 made this one kind): returns an error string and keeps nothing
+    (a skill and a playbook are one kind): returns an error string and keeps nothing
     when the proposal is not a later revision, when the live version cannot be
     ordered as a whole number, or when the archive slot is already taken
     (which would be overwriting a predecessor after all).
@@ -419,6 +433,7 @@ def replace_skill_body(
     proposed_markdown: str,
     *,
     tool_names: frozenset[str] | None = None,
+    allow_retired: bool = False,
 ) -> str | None:
     """Validate a proposed SKILL.md and atomically replace the live one.
 
@@ -426,7 +441,7 @@ def replace_skill_body(
     approve route and by `skill_refine` once its gate is answered. Refuses
     before touching anything when the proposal fails the loader round-trip or
     names a different skill, or when it would not pass the door a new one
-    goes through (`skill_create.refuse_playbook`: a tool the runtime lacks, a
+    goes through (`skill_door.refuse_playbook`: a tool the runtime lacks, a
     credential-bearing path, a path outside the home tree). Every skill's
     revision number is stamped by the runtime before any of that
     (`stamp_playbook_version`), so `keep_predecessor` can only refuse over a
@@ -444,17 +459,22 @@ def replace_skill_body(
     if live is None:
         return f"the live skill {name!r} does not parse, so nothing can be kept before replacing it"
     # A retired revision was withdrawn on measurement, and a rewrite is not
-    # the way back: returning to a playbook is a person's act on the
-    # retirement card. Without this the demotion is one-way only by accident.
-    # The card's own `base_sha256` catches the common route here, because
-    # retiring rewrites the frontmatter and so moves the hash, but that guard
-    # is skipped for a card carrying no hash and it is not this function's to
-    # rely on. `skill_refine` reaches here with no hash at all.
-    if live.status == "retired":
+    # the way back: returning to a playbook is a person's act. Without this
+    # the demotion is one-way only by accident. The card's own `base_sha256`
+    # catches the common route here, because retiring rewrites the
+    # frontmatter and so moves the hash, but that guard is skipped for a card
+    # carrying no hash and it is not this function's to rely on.
+    #
+    # `allow_retired` is the one exception: `skill_refine`'s `revert` action
+    # is a person's act on a retired skill by construction, filed as its own
+    # card and applied with `status` restamped to `active` in the same pass,
+    # so the demotion is undone rather than routed around.
+    if live.status == "retired" and not allow_retired:
         return (
             f"{name} v{live.version} is retired, so nothing reads it and a "
-            "rewrite of it would not be carried. Make it active again with "
-            "`playbook_judge` keep if it should come back, then refine it."
+            "rewrite of it would not be carried. Restore it with "
+            "`skill_refine` action `revert` if it should come back, then "
+            "refine it."
         )
 
     # The revision number is the runtime's. Stamped before validation so the
@@ -477,7 +497,7 @@ def replace_skill_body(
             return "proposed SKILL.md failed loader validation (frontmatter/size)"
         if entry.name != name:
             return f"proposed frontmatter name {entry.name!r} must match {name!r}"
-        from tesseract.kernel.tools.skill_create import refuse_playbook
+        from tesseract.brain.skill_door import refuse_playbook
 
         refused = refuse_playbook(proposed_markdown, name, tool_names)
         if refused:
@@ -526,12 +546,13 @@ def _take_back_archive(folder: Path, live: SkillEntry) -> str | None:
     return None
 
 
-def add_evidence(folder: Path, turn_ids: list[str], *, activate: bool = False) -> str | None:
-    """Record the turns that supported a playbook, and activate a draft.
+def add_evidence(folder: Path, turn_ids: list[str]) -> str | None:
+    """Record the turns that supported a playbook.
 
-    The second-success rule lives here: a draft playbook whose steps carried
-    another task through is a procedure that has now worked twice, and it
-    becomes `active`. The frontmatter block is re-serialised (the order kept,
+    A skill is active and carried the moment it is made, so a later task
+    whose steps matched an existing one is not activating anything: it is
+    recording a second turn that leaned on the same procedure. The
+    frontmatter block is re-serialised (the order kept,
     comments not), which is acceptable because a playbook is a machine-read
     declaration and its body, where a person writes, is untouched. Returns an
     error string or None.
@@ -551,18 +572,10 @@ def add_evidence(folder: Path, turn_ids: list[str], *, activate: bool = False) -
     if not isinstance(fm, dict):
         return f"{path} frontmatter must be a mapping"
     have = [str(t) for t in (fm.get("evidence") or []) if str(t).strip()]
-    added = 0
     for turn_id in turn_ids:
         if turn_id and turn_id not in have:
             have.append(turn_id)
-            added += 1
     fm["evidence"] = have
-    # Only a turn the playbook had not seen counts as a second success. A
-    # task read twice (a pass that failed after writing, a position that did
-    # not move) brings the same turns back, and they must not activate the
-    # draft they were written from.
-    if activate and added and str(fm.get("status") or "") == "draft":
-        fm["status"] = "active"
     block = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
     updated = raw[: match.start(1)] + block + raw[match.end(1):]
     tmp = path.with_suffix(".md.tmp")

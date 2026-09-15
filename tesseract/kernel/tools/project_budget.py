@@ -4,11 +4,12 @@ A project is priced when it is started (`project_new` asks for the number) and
 repriced here. The two are the same field on the same record, so a budget set
 from a phone and one set at the desk are one answer.
 
-**Its posture is a floor no mode relaxes**, which `playbook_judge` and
-`context_set` are the precedent for rather than `task_propose`: that one is
-deliberately auto under `free`, because giving itself work is what the mode is
-for. Setting its own ceiling is not. A budget the assistant can raise is not a
-budget, so `permissions.yaml` names this in `modes.free.overrides` as well as
+**Its posture is a floor no mode relaxes**, which `context_set` and the
+`skill_retirement` card (`permissions.yaml::workspace_cards`) are the
+precedent for rather than `task_propose`: that one is deliberately auto
+under `free`, because giving itself work is what the mode is for. Setting
+its own ceiling is not. A budget the assistant can raise is not a budget, so
+`permissions.yaml` names this in `modes.free.overrides` as well as
 in `tools:`, and `free`'s auto baseline never reaches it.
 
 `None` clears the price and is not zero. Zero is a number the operator chose,

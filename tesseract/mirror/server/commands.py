@@ -46,7 +46,7 @@ __all__ = ["ALARM_HANDLER_DOTPATH", "parse_alarm_spec", "parse_alarm_when", "par
 
 log = logging.getLogger(__name__)
 
-OBSERVER_MODES = {"meta", "maintenance"}
+OBSERVER_MODES = {"meta"}
 #: Not a second list. `policy.VALID_MODES` is the authority and this name is
 #: kept so existing callers and the command registry read the same set.
 SECURITY_MODES = VALID_MODES
@@ -110,7 +110,7 @@ async def cmd_observe(app: web.Application, session: ServerSession, arg: str | N
         await send_envelope(session, make_envelope(
             "stream_error", "loop", session.session_id,
             {
-                "message": f"/observe: unknown mode {mode!r}; expected meta|maintenance",
+                "message": f"/observe: unknown mode {mode!r}; expected {sorted(OBSERVER_MODES)[0]}",
                 "severity": "warning",
             },
         ))

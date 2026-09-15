@@ -134,6 +134,7 @@ DECLARED_AS: dict[str, str] = {
     "feedback_proposals": "the runtime's own logs, ledgers and archives",
     "janitor_sweeps": "the runtime's own logs, ledgers and archives",
     "tokenjuice_audit": "the runtime's own logs, ledgers and archives",
+    "tool_results": "the runtime's own logs, ledgers and archives",
     # Both under "skills and agents" rather than the logs entry: neither is a
     # stream the map reaches through something citing it. They are the evidence
     # behind judging a card or a set of instructions, and a builder that read

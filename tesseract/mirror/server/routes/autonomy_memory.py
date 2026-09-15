@@ -170,7 +170,7 @@ _trees_lock = threading.Lock()
 def _tree_roots() -> list[tuple[str, Path, str]]:
     """The four things the library is made of, and where each is written.
 
-    Each path is the one its own writer uses: `skill_refinement.py` writes
+    Each path is the one its own writer uses: `brain/skills.py` writes
     under the workspace and `user_agents_dir` is where a card the assistant
     built lands, so a tree named here is the tree that is actually written to
     rather than a guess that would report zero forever.

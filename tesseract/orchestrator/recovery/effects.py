@@ -122,8 +122,8 @@ def build_card(row: Checkpoint) -> WorkspaceEvent:
 
     **It asks and does not offer a button that runs anything.** Approving a
     `clarification` flips a status and nothing more: `apply_decision` has no
-    branch for the kind, and the cockpit's Inbox leaves it out of
-    `ACTIONABLE_KINDS` and draws one Resolve verb. So the card says what is
+    branch for the kind, and the cockpit's Inbox, reading
+    `workspace_events/events.py::ANSWERABLE_WITH`, draws one Resolve verb. So the card says what is
     uncertain, says plainly that nothing has been repeated, and asks for the
     answer in words. Copy promising a retry would have been describing a
     remedy this runtime does not have yet, which is the failure the house

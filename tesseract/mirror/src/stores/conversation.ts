@@ -112,6 +112,15 @@ interface ChatState {
   resolveApproval: (chatId: string | null, callId: string, approved: boolean) => void;
   addEntityMessage: (chatId: string | null, message: string) => void;
   addRuntimeNote: (chatId: string | null, text: string, mark: string) => void;
+  /** The one boundary note that says the clear already happened
+   *  (`session_note` with `cleared: true`). Replaces the slice the way
+   *  `reset` does and seeds it with only this note, so the note is
+   *  self-sufficient: whatever order the server's `session_reset` and this
+   *  note actually arrive in, the chat ends up holding nothing said before
+   *  the boundary. `reset` then `addRuntimeNote` already produces this same
+   *  state when both arrive in the order they are sent; this is what makes
+   *  it true even when they do not. */
+  startFreshWithNote: (chatId: string | null, text: string, mark: string) => void;
   addError: (chatId: string | null, message: string) => void;
   addStreamNote: (chatId: string | null, text: string) => void;
   setToolStatus: (chatId: string | null, callId: string, status: ToolCallStatus, reason?: string) => void;
@@ -884,6 +893,35 @@ export const useConversationStore = create<ChatState>((set, get) => ({
         },
       ],
     }));
+  },
+
+  startFreshWithNote: (chatId, text, mark) => {
+    const id = _resolveId(get(), chatId);
+    if (!id) return;
+    // Same three cleanups `reset` does, for the same reason: the slice is
+    // being replaced wholesale, so anything keyed off the old one (a pending
+    // rAF flush, a queue position counter) would otherwise apply to a chat
+    // that no longer looks like the one it was scheduled against.
+    _dropPendingDelta(id);
+    _rafByChat.delete(id);
+    _queueCounterByChat.delete(id);
+    set(state => {
+      const chats = new Map(state.chats);
+      chats.set(id, {
+        ..._makeSlice(),
+        messages: [
+          {
+            id: `runtime-${Date.now()}`,
+            role: 'runtime' as const,
+            runtimeOrigin: mark,
+            content: text,
+            timestamp: Date.now(),
+            status: 'complete' as const,
+          },
+        ],
+      });
+      return { chats, dropTtsUntilTurnEnd: false };
+    });
   },
 
   addError: (chatId, message: string) => {

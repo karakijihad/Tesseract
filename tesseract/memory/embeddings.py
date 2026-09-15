@@ -1,9 +1,12 @@
 """Embeddings + FAISS semantic index.
 
-The provider, embedding model, vector dimensions, and HTTP timeouts are all
-injected from `tesseract/config/roles.yaml` (top-level `embeddings:` block;
-the catalog entry it references lives in `providers.yaml`).
-This module carries no defaults — swap providers by editing config only.
+The provider, embedding model, vector dimensions, HTTP timeouts, and the
+ordered input cut sizes are all injected from `tesseract/config/roles.yaml`
+(top-level `embeddings:` block; the catalog entry it references lives in
+`providers.yaml`, see `input_cut_chars`). This module resolves none of them
+itself, and carries no default cut list: a caller that constructs
+`EmbeddingIndex` reads `input_cut_chars` from config and passes it in, the
+same as every other infrastructure value here.
 FAISS IndexFlatIP for cosine similarity on L2-normalized vectors.
 Derived artifact — delete and rebuild from canonical .md files.
 """
@@ -52,6 +55,14 @@ def _text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# The exact body Ollama answers with when a prompt tokenizes past the
+# model's context window (measured against the live 0.20.2 daemon serving
+# nomic-embed-text). Matched by text, not by status code alone: a 500 from
+# `/api/embeddings` can mean this or something else entirely, and only this
+# one is worth retrying with a shorter input.
+_CONTEXT_LENGTH_ERROR_MARKER = "exceeds the context length"
+
+
 class EmbeddingIndex:
     def __init__(
         self,
@@ -63,6 +74,7 @@ class EmbeddingIndex:
         dimensions: int,
         timeout_seconds: float,
         max_retries: int,
+        input_cut_chars: list[int],
     ) -> None:
         self._derived_dir = derived_dir
         self._provider = provider
@@ -71,6 +83,11 @@ class EmbeddingIndex:
         self._dimensions = dimensions
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
+        # Ordered fallback sizes, largest first (`providers.yaml`'s
+        # `input_cut_chars`, see `config.loader.resolve_input_cut_chars`).
+        # Required, not defaulted: the caller resolves it from config so this
+        # class never guesses a token-to-character ratio or a retry ladder.
+        self._input_cut_chars = input_cut_chars
         self._index_path = derived_dir / "index.faiss"
         self._map_path = derived_dir / "id_map.json"
         self._id_to_pos: dict[str, int] = {}
@@ -204,54 +221,82 @@ class EmbeddingIndex:
         await self.embed_text("warmup")
 
     async def embed_text(self, text: str) -> list[float] | None:
-        try:
-            resp = await self._http_client().post(
-                f"{self._base_url}/api/embeddings",
-                # keep_alive=-1 pins the embedding model in Ollama's VRAM
-                # for the lifetime of the Ollama process. Default is 5min,
-                # which causes reload cost on every sparse retrieval cycle.
-                json={"model": self._model, "prompt": text, "keep_alive": -1},
-            )
-            resp.raise_for_status()
-            self._record_answer(True)
-            return resp.json()["embedding"]
-        except httpx.TimeoutException as exc:
-            # Named apart from the rest because it is the one that lies about
-            # itself: a burst of memory writes can queue behind a model load
-            # and time out while the service is perfectly healthy. This log
-            # said "ollama may be down" 190 times in one evening against an
-            # Ollama that answered a hand probe in under a second.
-            logger.warning(
-                "%s did not answer within %.0fs, so this text has no vector "
-                "and is findable by keyword only until it is embedded again "
-                "(%s)",
-                self._provider, self._timeout_seconds, type(exc).__name__,
-            )
-            self._record_answer(False)
-            return None
-        except httpx.HTTPStatusError as exc:
-            # It answered and refused. The status and the body say why, and a
-            # wrong model name is the common one.
-            body = " ".join((exc.response.text or "").split())[:200]
-            logger.warning(
-                "%s refused to embed with %r: HTTP %s %s. This text has no "
-                "vector and is findable by keyword only.",
-                self._provider, self._model, exc.response.status_code, body,
-            )
-            self._record_answer(False)
-            return None
-        except Exception as exc:
-            # Everything else, INCLUDING the connection failure this used to
-            # assume every time. What went wrong is reported rather than
-            # guessed: a log that names a cause it did not check sends whoever
-            # reads it to restart a service that was never the problem.
-            logger.warning(
-                "%s could not embed with %r (%s: %s). This text has no vector "
-                "and is findable by keyword only until it is embedded again.",
-                self._provider, self._model, type(exc).__name__, exc,
-            )
-            self._record_answer(False)
-            return None
+        # Sent whole first. Only a refusal naming the context length falls
+        # back to a cut copy, tried in `self._input_cut_chars` order, largest
+        # first; any other outcome (success, timeout, a different refusal, a
+        # connection error) is handled on the first attempt exactly as
+        # before, with no retry. Callers hash and store the ORIGINAL text
+        # (see `_text_hash` call sites), so a cut payload never changes what
+        # a later edit is compared against.
+        prompts = [text]
+        for cut in self._input_cut_chars:
+            if cut < len(text):
+                prompts.append(text[:cut])
+
+        for attempt, prompt in enumerate(prompts):
+            is_last_attempt = attempt == len(prompts) - 1
+            try:
+                resp = await self._http_client().post(
+                    f"{self._base_url}/api/embeddings",
+                    # keep_alive=-1 pins the embedding model in Ollama's VRAM
+                    # for the lifetime of the Ollama process. Default is
+                    # 5min, which causes reload cost on every sparse
+                    # retrieval cycle.
+                    json={"model": self._model, "prompt": prompt, "keep_alive": -1},
+                )
+                resp.raise_for_status()
+                self._record_answer(True)
+                if attempt > 0:
+                    logger.warning(
+                        "%s refused the full text for %r as too long; it was "
+                        "cut to %d characters and stored as that shorter "
+                        "vector.",
+                        self._provider, self._model, len(prompt),
+                    )
+                return resp.json()["embedding"]
+            except httpx.TimeoutException as exc:
+                # Named apart from the rest because it is the one that lies
+                # about itself: a burst of memory writes can queue behind a
+                # model load and time out while the service is perfectly
+                # healthy. This log said "ollama may be down" 190 times in
+                # one evening against an Ollama that answered a hand probe in
+                # under a second.
+                logger.warning(
+                    "%s did not answer within %.0fs, so this text has no "
+                    "vector and is findable by keyword only until it is "
+                    "embedded again (%s)",
+                    self._provider, self._timeout_seconds, type(exc).__name__,
+                )
+                self._record_answer(False)
+                return None
+            except httpx.HTTPStatusError as exc:
+                # It answered and refused. The status and the body say why,
+                # and a wrong model name is the common one.
+                body = " ".join((exc.response.text or "").split())[:200]
+                if _CONTEXT_LENGTH_ERROR_MARKER in body and not is_last_attempt:
+                    continue
+                logger.warning(
+                    "%s refused to embed with %r: HTTP %s %s. This text has "
+                    "no vector and is findable by keyword only.",
+                    self._provider, self._model, exc.response.status_code, body,
+                )
+                self._record_answer(False)
+                return None
+            except Exception as exc:
+                # Everything else, INCLUDING the connection failure this used
+                # to assume every time. What went wrong is reported rather
+                # than guessed: a log that names a cause it did not check
+                # sends whoever reads it to restart a service that was never
+                # the problem.
+                logger.warning(
+                    "%s could not embed with %r (%s: %s). This text has no "
+                    "vector and is findable by keyword only until it is "
+                    "embedded again.",
+                    self._provider, self._model, type(exc).__name__, exc,
+                )
+                self._record_answer(False)
+                return None
+        return None  # unreachable: prompts always has >=1 entry
 
     async def add(self, memory_id: str, text: str) -> bool:
         vec = await self.embed_text(text)

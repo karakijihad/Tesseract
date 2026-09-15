@@ -29,8 +29,10 @@ def map(event: AutonomyEvent) -> list[AgendaItemDraft]:
     new_models = payload.get("new_models") or []
     deprecated = payload.get("deprecated_models") or []
     failures = payload.get("failures") or []
+    density = payload.get("schema_density") or []
+    drafts = _density_drafts(event, density)
     if not (new_models or deprecated or failures):
-        return []
+        return drafts
     parts = []
     if new_models:
         parts.append(f"new={list(new_models)[:3]}")
@@ -55,6 +57,43 @@ def map(event: AutonomyEvent) -> list[AgendaItemDraft]:
                 ),
             ),
             slug=f"provider-watch-{summary[:30]}",
+        )
+    ] + drafts
+
+
+def _density_drafts(event: AutonomyEvent, density: list) -> list[AgendaItemDraft]:
+    """A model whose tool schemas now cost a different amount than the catalog
+    says. The check never rewrites a figure that is there, so this card is how
+    the new reading reaches the file: the operator applies it or leaves it."""
+    rows = [d for d in density if isinstance(d, dict) and d.get("ref")]
+    if not rows:
+        return []
+    detail = "; ".join(
+        f"{d['ref']}: catalog says {d.get('declared')}, measured {d.get('measured')}"
+        for d in rows[:5]
+    )
+    return [
+        AgendaItemDraft(
+            goal=(
+                "tool schemas cost a different amount than providers.yaml says: "
+                + detail
+            )[:500],
+            source=AgendaSource.PROVIDER_WATCH,
+            risk_class=RiskClass.PROPOSE,
+            source_event_id=event.event_id,
+            rationale=(
+                "The request cost every surface shows is priced with the catalog "
+                "figure, so it reads off by the difference until the figure is "
+                f"updated. {detail}"
+            )[:2000],
+            approvals_required=(
+                ApprovalGate(
+                    kind="config_apply",
+                    target="tesseract/config/providers.yaml",
+                    fulfilled=False,
+                ),
+            ),
+            slug=f"schema-density-{rows[0]['ref'][:30]}",
         )
     ]
 

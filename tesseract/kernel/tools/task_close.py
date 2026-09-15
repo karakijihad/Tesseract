@@ -60,6 +60,12 @@ logger = logging.getLogger(__name__)
 _VERIFICATION_CHARS = 3800
 
 GateRunner = Callable[[Project, ToolContext], Awaitable[GateResult]]
+#: Told once, after the transition has already happened. Never awaited and
+#: never allowed to fail or slow the close down: the caller schedules
+#: whatever it needs to send in the background and swallows its own errors,
+#: because a phone message that could not go out is not a reason a task stays
+#: open. `None` in the REPL and in every test that has no operator to tell.
+OnClosed = Callable[[AgendaItem, AgendaStatus, Literal["gate", "model"]], None]
 
 
 async def _run_project_gate(project: Project, context: ToolContext) -> GateResult:
@@ -139,9 +145,16 @@ class TaskCloseTool(Tool):
     receipt_kind: ClassVar[str] = "record"
     recovery_behaviour: ClassVar[str] = "idempotent"
 
-    def __init__(self, store: AgendaStore, *, gate: GateRunner | None = None) -> None:
+    def __init__(
+        self,
+        store: AgendaStore,
+        *,
+        gate: GateRunner | None = None,
+        on_closed: OnClosed | None = None,
+    ) -> None:
         self._store = store
         self._gate = gate or _run_project_gate
+        self._on_closed = on_closed
 
     @property
     def name(self) -> str:
@@ -337,6 +350,14 @@ class TaskCloseTool(Tool):
                 context.note_task_closed(outcome, by)
             except Exception:  # noqa: BLE001 - the task is closed either way
                 logger.exception("task_close: could not put %s on the turn record", item.id)
+        # Same rule: the close already happened, so telling the operator can
+        # only ever log. `None` in the REPL and in every test with nobody to
+        # tell.
+        if self._on_closed is not None:
+            try:
+                self._on_closed(item, status, by)
+            except Exception:  # noqa: BLE001 - the task is closed either way
+                logger.exception("task_close: on_closed callback failed for %s", item.id)
         return ToolResult(
             output=said,
             receipt=Receipt(

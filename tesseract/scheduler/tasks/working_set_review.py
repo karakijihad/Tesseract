@@ -1,22 +1,25 @@
 """What the turn carries, judged against what it actually reached for.
 
 The working set is a spending dial: every tool named in ``working_set.yaml::
-core`` costs its schema on every turn, and every playbook named in
-``workspace/skills/carried.txt`` costs its steps. Both gauges have existed for
-a while and neither has ever moved anything. This is the stage that reads them
-and proposes a change.
+core`` costs its schema on every turn. This gauge has existed for a while and
+never moved anything. This is the stage that reads it and proposes a change.
+
+Playbooks had a twin of this half once, over ``workspace/skills/carried.txt``.
+It was removed: nothing measures a playbook onto or off the carried dial by a
+threshold any more, the operator's own choice is the only thing that moves
+it, and the tool half below is what stays.
 
 **It proposes and never writes.** ``core:`` is the operator's half of a file
 whose other half is generated, and the whole point of that split is that a
 person chooses the names. A job that edited it would take the one decision the
 split exists to protect, so what it produces is a card carrying the change and
-the window it was computed over. A test asserts both files are byte-identical
+the window it was computed over. A test asserts the file is byte-identical
 after a run that proposed something.
 
 **No model is involved, and that is the design rather than a shortfall.** The
 proposal IS the arithmetic: a tool reached for through a search in four
 separate sessions should be carried, one carried and never called should not.
-`skill_refinement` asks a model to write a revised procedure because a
+`skill_refine`'s `revise` asks a model to write a revised procedure because a
 procedure is prose; a working set is a list of names, and there is nothing here
 for a model to author.
 
@@ -32,9 +35,9 @@ Three things it must hold at once, and each has been the way to get this wrong:
    list is reached and ``playbook_search`` is its twin. Proposing to drop
    either would turn a spending dial into a capability cut.
 
-Fired on volume rather than a clock, the way `skill_refinement` is: a cadence
-reads two data points as readily as two hundred, and what decides whether the
-dial can be judged is how much has been logged since the last look.
+Fired on volume rather than a clock: a cadence reads two data points as
+readily as two hundred, and what decides whether the dial can be judged is
+how much has been logged since the last look.
 """
 
 from __future__ import annotations
@@ -65,10 +68,6 @@ class WorkingSetReviewJob(BaseJob):
             cfg = ctx.config or {}
             window_days = int(cfg.get("window_days", 14))
             min_sessions = int(cfg.get("min_sessions_to_carry", 4))
-            # A playbook has no session count of its own: the gauge counts
-            # loads. Its own key, so the two thresholds can be set apart and
-            # neither reads as the other's unit.
-            min_loads = int(cfg.get("min_loads_to_carry", 4))
             min_calls = int(cfg.get("min_calls_to_judge", 50))
             max_proposals = int(cfg.get("max_proposals", 8))
 
@@ -96,7 +95,6 @@ class WorkingSetReviewJob(BaseJob):
                 reading,
                 min_sessions,
                 max_proposals,
-                min_loads=min_loads,
                 declined=declined,
             )
             if not proposal.any():
@@ -151,7 +149,7 @@ class WorkingSetReviewJob(BaseJob):
 
 
 class Reading:
-    """What the two gauges hold over the window, and what is carried now."""
+    """What the gauge holds over the window, and what is carried now."""
 
     def __init__(
         self,
@@ -159,13 +157,11 @@ class Reading:
         calls: int,
         core: set[str],
         locked: set[str],
-        playbooks: list[dict[str, Any]],
         roster: bool,
     ) -> None:
         self.tools = tools
         self.core = core
         self.locked = locked
-        self.playbooks = playbooks
         self.roster = roster
         #: The WHOLE window, not the candidate slice. See `_tools`.
         self.calls = calls
@@ -175,20 +171,14 @@ class Proposal:
     def __init__(self) -> None:
         self.carry: list[dict[str, Any]] = []
         self.drop: list[dict[str, Any]] = []
-        self.drop_playbooks: list[dict[str, Any]] = []
-        self.carry_playbooks: list[dict[str, Any]] = []
 
     def any(self) -> bool:
-        return bool(
-            self.carry or self.drop or self.drop_playbooks or self.carry_playbooks
-        )
+        return bool(self.carry or self.drop)
 
     def as_json(self) -> dict[str, Any]:
         return {
             "carry": self.carry,
             "drop": self.drop,
-            "drop_playbooks": self.drop_playbooks,
-            "carry_playbooks": self.carry_playbooks,
         }
 
 
@@ -235,45 +225,11 @@ async def _read(ctx: JobContext, window_days: int) -> Reading:
         tools=tools,
         calls=window_calls,
         core=core,
-        # Rule 3: the two doors to everything not carried, from the one
-        # constant the approval route reads too.
+        # Rule 3: the door to everything not carried, from the one constant
+        # the approval route reads too.
         locked=set(UNDROPPABLE),
-        playbooks=await asyncio.to_thread(_playbook_reading, window_days, ctx.fired_at),
         roster=registry is not None,
     )
-
-
-def _playbook_reading(window_days: int, now: datetime) -> list[dict[str, Any]]:
-    """Every live playbook, how often it was read, and whether it is carried.
-
-    **Every one, not only the carried ones.** Measuring the carried set alone
-    could answer one direction of the question and not the other: a playbook
-    read constantly while off the list pays a `playbook_search` every time and
-    had no way onto the card. The tool half has carried both directions since
-    it was written, and the asymmetry here was an omission rather than a
-    ruling.
-    """
-    from tesseract.brain.playbook_reuse import measure_all
-    from tesseract.brain.playbook_set import carried_path, load_carried_names, skills_dir
-    from tesseract.brain.skills import load_skills
-
-    carried = load_carried_names(carried_path())
-    live = sorted(
-        e.name
-        for e in load_skills(skills_dir())
-        if e.status != "retired"
-    )
-    if not live:
-        return []
-    measured = measure_all(live, window_days=window_days, now=now)
-    return [
-        {
-            "playbook": name,
-            "loads": sum(r.loads for r in measured.get(name, {}).values()),
-            "carried": name in carried,
-        }
-        for name in live
-    ]
 
 
 def _propose(
@@ -281,7 +237,6 @@ def _propose(
     min_sessions: int,
     max_proposals: int,
     *,
-    min_loads: int = 4,
     declined: set[tuple[str, str, str]] | None = None,
 ) -> Proposal:
     """The whole judgement, and it is arithmetic.
@@ -317,25 +272,6 @@ def _propose(
     out.drop.sort(key=lambda r: r["tool"])
     out.carry = out.carry[:max_proposals]
     out.drop = out.drop[:max_proposals]
-    out.drop_playbooks = [
-        {"playbook": row["playbook"], "loads": 0}
-        for row in reading.playbooks
-        if row["carried"] and int(row["loads"]) == 0
-        and ("playbook", "drop", row["playbook"]) not in refused
-    ][:max_proposals]
-    # The direction the tool half always had: read often while off the list,
-    # so every one of those reads paid a `playbook_search` first. Ranked by
-    # loads, because a playbook has no session count of its own.
-    carry_playbooks = sorted(
-        (row for row in reading.playbooks
-         if not row["carried"] and int(row["loads"]) >= min_loads
-         and ("playbook", "carry", row["playbook"]) not in refused),
-        key=lambda r: (-int(r["loads"]), r["playbook"]),
-    )
-    out.carry_playbooks = [
-        {"playbook": r["playbook"], "loads": int(r["loads"])}
-        for r in carry_playbooks
-    ][:max_proposals]
     return out
 
 
@@ -375,30 +311,11 @@ def _explain(
                 for r in proposal.drop
             ],
         })
-    if proposal.carry_playbooks:
-        sections.append({
-            "title": "Carry these playbooks on every turn",
-            "lines": [
-                f"{r['playbook']}: read {r['loads']} times while off the list, "
-                "so each of those turns looked it up first. Carrying it brings "
-                "its version, its status and when to use it into every turn."
-                for r in proposal.carry_playbooks
-            ],
-        })
-    if proposal.drop_playbooks:
-        sections.append({
-            "title": "Stop carrying these playbooks",
-            "lines": [
-                f"{r['playbook']}: when to use it rides every turn and it was "
-                "never read. It stays available, one playbook_search away."
-                for r in proposal.drop_playbooks
-            ],
-        })
     read_from = [
         f"{calls} tool calls over {window_days} days, ranked by how many "
         "separate sessions reached for each rather than by raw calls.",
     ]
-    if proposal.drop or proposal.drop_playbooks:
+    if proposal.drop:
         # Only where there is a zero to explain. Nothing records when a name
         # joined the list, so the honest sentence is that the window may
         # predate it: a name added recently and used since shows those calls
@@ -441,10 +358,6 @@ def _summary(proposal: Proposal, window_days: int, calls: int) -> str:
         counts.append(f"carry {len(proposal.carry)} more")
     if proposal.drop:
         counts.append(f"drop {len(proposal.drop)}")
-    if proposal.carry_playbooks:
-        counts.append(f"carry {len(proposal.carry_playbooks)} playbook")
-    if proposal.drop_playbooks:
-        counts.append(f"drop {len(proposal.drop_playbooks)} playbook")
     return (
         "Read from " + f"{calls} tool calls over {window_days} days: "
         + ", ".join(counts) + ". Nothing has been changed yet."
@@ -454,11 +367,12 @@ def _summary(proposal: Proposal, window_days: int, calls: int) -> str:
 def _declared_kinds(proposal: Proposal) -> list[str]:
     """Which of the runtime's declared proposal kinds this card carries.
 
-    The four lists are two questions asked of two subjects: carrying more, and
-    carrying less, of a tool or of a playbook. `scheduler/proposals.py` is
-    where what may be proposed at all is declared, and this job is one of two
-    producers drawing from it, so the keys go ON the card rather than being
-    inferred from the payload's shape by whoever reads it next.
+    The two lists are two directions asked of the one subject a tool-only
+    proposal now carries: carrying more, and carrying less.
+    `scheduler/proposals.py` is where what may be proposed at all is
+    declared, and this job is one of its producers, so the keys go ON the
+    card rather than being inferred from the payload's shape by whoever reads
+    it next.
 
     `filed` raises rather than returning a flag. A card is the wrong place to
     discover that a producer invented a kind: the run is over by then and the
@@ -467,9 +381,9 @@ def _declared_kinds(proposal: Proposal) -> list[str]:
     from tesseract.scheduler import proposals
 
     keys: list[str] = []
-    if proposal.carry or proposal.carry_playbooks:
+    if proposal.carry:
         keys.append(proposals.filed("carry_more").key)
-    if proposal.drop or proposal.drop_playbooks:
+    if proposal.drop:
         keys.append(proposals.filed("carry_less").key)
     return keys
 
@@ -557,16 +471,11 @@ def _already_declined(store: Any, now: datetime) -> set[tuple[str, str, str]]:
         if when is None or when < cutoff:
             continue
         payload = ev.payload or {}
-        for key, field in (
-            ("carry", "tool"), ("drop", "tool"),
-            ("carry_playbooks", "playbook"), ("drop_playbooks", "playbook"),
-        ):
+        for key, field in (("carry", "tool"), ("drop", "tool")):
             direction = "carry" if key.startswith("carry") else "drop"
             for row in payload.get(key) or []:
                 name = str(row.get(field) or "")
                 if name:
-                    # Keyed by kind as well, so a tool and a playbook that
-                    # happen to share a name do not share a rejection.
                     declined.add((field, direction, name))
     return declined
 

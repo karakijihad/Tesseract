@@ -1,25 +1,21 @@
 """Skill usage telemetry — one JSONL line per skill load + outcome.
 
 When the assistant `file_read`s a `workspace/skills/<name>/SKILL.md` body, that
-consultation is logged to `<TESSERACT_HOME>/logs/skills/usage.jsonl` so the
-refinement job (`scheduler/tasks/skill_refinement.py`) can flag skills that keep
-failing. That job runs on a cadence: it waited on the volume of this file until
-that trigger was measured never to fire, and `config/schedule.yaml` carries the
-reasoning beside its row.
+consultation is logged to `<TESSERACT_HOME>/logs/skills/usage.jsonl`.
+`brain/playbook_reuse.py` reads it to measure a revision, and
+`skill_refine`'s `report` action writes the one row a rewrite is ever built
+from.
 
 Outcome vocabulary (Agent-Skills-agnostic):
 - ``ok``          — the skill body read cleanly (the common case).
 - ``error``       — the assistant was pointed at the skill but the read failed
                     (missing / oversize / unreadable): a genuinely broken skill.
-- ``correction``  — an operator correction attributed to a skill. Produced by
-                    `attribute_session_corrections`, called when a `feedback`
-                    memory is saved: by `memory_save` on the turn it happens,
-                    and by the session-close reflection (`brain/session_ops.py`)
-                    when the reflection itself saved one. A correction row for
-                    a PLAYBOOK also carries the revision that was read, the
-                    turn that read it, and the furthest step that turn reached
-                    after reading it, so a correction lands on a step and a
-                    version rather than on every skill loaded that session.
+- ``correction``  — the agent that followed a skill reports it went wrong,
+                    through `skill_refine` action `report`. It writes the
+                    revision that was read, the turn that read it and the
+                    step that failed, when the agent knows them, so a
+                    correction lands on a step and a version rather than on
+                    every skill loaded that session.
 
 TESSERACT_HOME is resolved AT CALL TIME (never an import-time constant) so a
 test that sets ``TESSERACT_HOME`` before calling never writes to the
@@ -108,26 +104,19 @@ def log_correction(
     version: str = "",
     turn_id: str = "",
     step: int | None = None,
-    memory_id: str = "",
-    unattributed: bool = False,
 ) -> None:
-    """Append one CORRECTION row: the work that followed the read was put
-    right afterwards.
+    """Append one CORRECTION row: the agent that followed this skill reports
+    it went wrong.
 
-    **Its own function because it is its own row shape.** These five fields
+    **Its own function because it is its own row shape.** These three fields
     only ever mean something together with `outcome="correction"`, and while
     they hung off `log_skill_load` the signature described neither row: a
-    caller could write an `ok` that claimed to be `unattributed`, or a
-    correction with no turn, and nothing refused either. Two shapes, two
-    functions, and each one's arguments are now the ones it actually has.
+    caller could write an `ok` with a step, or a correction with no turn, and
+    nothing refused either. Two shapes, two functions, and each one's
+    arguments are now the ones it actually has.
 
-    `memory_id` is the feedback memory that IS the correction. Without it the
-    row says a correction happened and the only way back to what the operator
-    said is session to session, which is many to many: a session can save
-    several corrections and consult several skills. The refinement job reads
-    it so its evidence carries the words rather than a step number alone.
-    `unattributed` says there WAS a memory and it could not be tied to this
-    skill, which is a different thing to tell an operator than no memory.
+    Written by `skill_refine`'s `report` action alone: the agent's report
+    leads and this is the record of it, not a mined inference.
     """
     extra: dict[str, Any] = {}
     if version:
@@ -139,10 +128,6 @@ def log_correction(
     # most interesting row on the log, and `if step:` drops exactly that one.
     if step is not None:
         extra["step"] = step
-    if memory_id:
-        extra["memory_id"] = memory_id
-    if unattributed:
-        extra["unattributed"] = True
     _append(skill, session_id, "correction", extra)
 
 
@@ -195,165 +180,6 @@ def _version_at(path: str | Path) -> str:
     except Exception:  # noqa: BLE001 — telemetry must never break the caller
         return ""
     return entry.version if entry is not None else ""
-
-
-def attribute_session_corrections(session_id: str, *, memory_id: str = "") -> int:
-    """Mark every skill loaded in ``session_id`` with a ``correction`` outcome.
-
-    Called when a `feedback` memory is saved in the session. A plain skill is
-    marked by name, which is coarse by design and smoothed by the refinement
-    job's window and threshold. A playbook is marked on the REVISION that was
-    read, the TURN that read it, and the furthest STEP that turn reached after
-    the read, which is what lets a correction be laid against one step of one
-    version rather than against everything consulted that session. Idempotent:
-    a skill already carrying a correction for this session is not re-flagged.
-    Returns the count added.
-    """
-    if not session_id:
-        return 0
-    loaded: dict[str, dict[str, Any]] = {}
-    corrected: set[str] = set()
-    for r in read_usage():
-        if r.get("session_id") != session_id:
-            continue
-        skill = r.get("skill")
-        if not skill:
-            continue
-        if r.get("outcome") == "correction":
-            corrected.add(skill)
-        else:
-            # The most recent load wins: the correction lands on the revision
-            # that was read last, and on the turn that read it.
-            loaded[skill] = r
-    targets = {skill: loaded[skill] for skill in loaded if skill not in corrected}
-
-    # Which skills actually get a row, resolved BEFORE any is written.
-    # Attribution is keyed on this and not on `targets`, because the skips
-    # below are the rules that decide what a correction is about: a session
-    # that followed playbook A and merely read playbook B has two targets and
-    # one correction, and keying on the candidate count threw the operator's
-    # words away on exactly the case the more-than-half rule exists to isolate.
-    eligible: list[tuple[str, str, str, int | None]] = []
-    for skill in sorted(targets):
-        row = targets[skill]
-        version = str(row.get("version") or "")
-        turn_id, step = ("", None)
-        if version:
-            turn_id, step, total, matched = step_reached(skill, session_id, row.get("ts"), version)
-            # No closed turn holds the read yet: the read was in the turn
-            # that is still running. Writing a row now would carry no turn
-            # and no step, and would mark the skill as corrected so the
-            # session-close pass could not write the joined one. Leave it.
-            if step is None:
-                continue
-            # Read is not followed. A task whose subject is the playbooks
-            # themselves reads every one of them, and a correction on that
-            # turn belongs to the procedure the turn was carrying out, not to
-            # the files it opened. Measured 2026-09-03 on exactly that task:
-            # the playbook being followed reached 8 of its 8 steps and the
-            # four it read as content reached 4, 4, 2 and 0 of 8. More than
-            # half is the line, and a playbook with no tool steps has nothing
-            # to be judged by and is marked as read.
-            if total and matched * 2 <= total:
-                continue
-        eligible.append((skill, version, turn_id, step))
-
-    # The memory is recorded only when ONE skill is being corrected. A
-    # session that consulted two playbooks and then saved a correction
-    # about one of them cannot say which, and stamping both with the same
-    # memory puts the operator's words against work they were not about.
-    # A quote that may be wrong is worse than no quote: it invites a
-    # confident rewrite aimed at the wrong thing, which is the failure
-    # this whole evidence path exists to end.
-    alone = len(eligible) == 1
-    added = 0
-    for skill, version, turn_id, step in eligible:
-        log_correction(
-            skill, session_id, version=version, turn_id=turn_id,
-            step=step,
-            memory_id=memory_id if alone else "",
-            # Why there is no memory, when there is one to be had. Without
-            # this the row is indistinguishable from one written before the
-            # field existed, and a card would say the words were never
-            # recorded when in fact they were and could not be tied to this
-            # skill. The two are different things to tell an operator.
-            unattributed=bool(memory_id) and not alone,
-        )
-        added += 1
-    return added
-
-
-def step_reached(
-    skill: str, session_id: str, loaded_at: Any, version: str = ""
-) -> tuple[str, int | None, int, int]:
-    """The turn that read the playbook, the furthest step it then reached,
-    how many tool steps the playbook has, and how many of those were run.
-
-    The turn is the closed record of `session_id` whose span holds the load;
-    the step is the highest playbook step whose tool the turn ran AFTER the
-    read, matched in order, because a turn that read the steps and then ran
-    `web_search` and `channel_send` was on step three when whatever went
-    wrong went wrong. `(turn_id, 0, n, 0)` is a turn that read the playbook
-    and followed none of it; `("", None, n, 0)` is a load no closed turn
-    accounts for.
-    """
-    from tesseract.brain.playbook_reuse import turn_record_around
-    from tesseract.brain.skills import load_skill_folder
-    from tesseract.orchestrator.turns.manifest import read_step_name
-    from tesseract.paths import workspace_dir
-
-    folder = workspace_dir() / "skills" / skill
-    entry = load_skill_folder(folder)
-    # The steps of the revision that was READ, which is not the live file
-    # once a refinement has landed in between: the kept copy under
-    # history/<version>/ is the one the correction is about.
-    if entry is not None and version and entry.version != version:
-        from tesseract.brain.skills import SKILL_HISTORY_DIRNAME
-
-        kept = load_skill_folder(folder / SKILL_HISTORY_DIRNAME / version)
-        if kept is not None:
-            entry = kept
-    tools = [s.tool for s in entry.steps] if entry is not None else []
-    total = sum(1 for tool in tools if tool)
-    when = _moment(loaded_at)
-    if when is None:
-        return "", None, total, 0
-    record = turn_record_around(session_id, when)
-    if record is None:
-        return "", None, total, 0
-    ran: list[str] = []
-    for row in record.get("stages") or []:
-        kind, name = read_step_name(str(row.get("stage") or ""))
-        started = _moment(row.get("started_at"))
-        if kind != "tool" or started is None or started <= when:
-            continue
-        ran.append(name)
-    # Two numbers: the frontmatter index of the furthest step reached, which
-    # is what the row reports, and how many TOOL steps were matched, which is
-    # what the more-than-half rule compares against `total`. A prose step
-    # between two tool steps would otherwise make one matched call read as
-    # step three of two.
-    reached, matched, cursor = 0, 0, 0
-    for index, tool in enumerate(tools, start=1):
-        if not tool:
-            continue
-        try:
-            cursor = ran.index(tool, cursor) + 1
-        except ValueError:
-            continue
-        reached = index
-        matched += 1
-    return str(record.get("run_id") or ""), reached, total, matched
-
-
-def _moment(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        when = datetime.fromisoformat(str(raw))
-    except ValueError:
-        return None
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def read_usage() -> list[dict[str, Any]]:

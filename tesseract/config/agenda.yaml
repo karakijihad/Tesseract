@@ -65,6 +65,12 @@ morning:
   # less; set it to 0 and only the one-at-a-time limit stands.
   project_proposal_every_days: 7
 
+# Your verdict on a finished task: good, bad or unused, one key. A task you
+# never pressed a key on is counted as unused once this many hours have passed
+# since it closed, so the work nobody came back to is counted rather than lost.
+verdict:
+  silence_hours: 72
+
 # agent controller daemon reload behavior.
 controller:
   drain_timeout_seconds: 30         # max wait for in-flight turns before forcing a reload

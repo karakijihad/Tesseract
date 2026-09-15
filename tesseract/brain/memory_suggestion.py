@@ -114,18 +114,6 @@ def suggestion_from_payload(payload: Any, fallback_observation_id: str) -> Memor
     )
 
 
-SCHEMA_FOR_PROMPT = """{
-  "kind": "remember" | "consolidate" | "reread",
-  "target":
-    | { "kind": "memory_path", "path": "<path/to/memory.md>" }
-    | { "kind": "topic_slug",  "slug": "<short-kebab-slug>" }
-    | { "kind": "quote",       "turn_index": <int>, "text": "<verbatim snippet>" },
-  "reason": "<= 180 chars, one sentence",
-  "confidence": 0.0-1.0,
-  "observation_id": "obs_YYYYMMDD_HHMMSS_<4hex>"
-}"""
-
-
 def _parse_target(raw: Any) -> MemoryTarget:
     if not isinstance(raw, dict):
         raise ValueError(f"target must be an object, got {type(raw).__name__}")

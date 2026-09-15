@@ -320,7 +320,7 @@ def _build_skills_block(root: Path) -> str:
     Empty/missing `workspace/skills/` → "" (section omitted, zero noise).
 
     **One arm, and the carried/not-carried distinction is the whole dial.**
-    Every skill declares the same contract (ruling 12: a file that declared
+    Every skill declares the same contract (a file that declared
     none of it still loads, and reports each missing key as a gap rather than
     escaping the dial). `carried.txt` is the dial (`brain/playbook_set.py`),
     the same one `working_set.yaml` is for tools: a carried skill renders its
@@ -358,11 +358,14 @@ def _build_skills_block(root: Path) -> str:
     chosen = load_carried_names(root / "skills" / CARRIED_FILENAME)
     deferred = sum(1 for s in skills if s.name not in chosen)
     lead = (
-        f"You have {len(skills)} skill(s) — prose self-extensions you (or a "
-        "delegate) drafted for a repeated chore or capability gap. Read the "
-        "`SKILL.md` body with `file_read` before using one; don't guess "
-        "behavior from the name alone. Its \"Use when\" says when to reach for "
-        "it, and one marked *cannot run* is not to be used until it is fixed."
+        f"You have {len(skills)} skill(s): procedures you (or a delegate) "
+        "wrote down because the same job will come again. When a carried "
+        "one's \"Use when\" matches the task in front of you, read its "
+        "`SKILL.md` with `file_read` and follow it step by step before "
+        "acting; don't guess behavior from the name alone. If following one "
+        "goes wrong, call `skill_refine` with action report; if you find one "
+        "wrong or incomplete, call `skill_refine` with action revise. One "
+        "marked *cannot run* is not to be used until it is fixed."
     )
     if deferred:
         count = "One" if deferred == 1 else f"{deferred} of them"

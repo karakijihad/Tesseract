@@ -149,7 +149,10 @@ def _closed_today(when: date) -> list[dict[str, Any]]:
         return [
             row
             for row in closed_since(midnight, statuses={"done", "failed"})
-            if str(row.get("project_id") or "").strip()
+            # Tasks, with or without a project: a task that belongs to no
+            # project still closes, still reaches the phone, and still counts.
+            # Autonomy's own items are the ones nobody asked for.
+            if row.get("source") == "task"
         ]
     except Exception:  # noqa: BLE001
         log.warning("the day: what closed could not be read", exc_info=True)

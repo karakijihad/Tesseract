@@ -256,8 +256,8 @@ _MIRROR_SESSION_SPECS: tuple[CommandSpec, ...] = (
         name="observe",
         summary="one-shot observer pass",
         handler=_h_observe,
-        arg_label="[meta|maintenance]",
-        arg_help="defaults to 'meta'",
+        arg_label="[meta]",
+        arg_help="the only mode; defaults to 'meta'",
     ),
     CommandSpec(
         name="mode",

@@ -209,9 +209,8 @@ core:
 #   - credential_request  # Ask the operator for an account you do not have, or for more of what one needs.
 #   - credential_setup  # Say where one of your accounts' values goes and which hosts it may reach.
 #   Extending yourself
-#   - skill_create  # Draft a new skill or playbook into the pending quarantine.
-#   - skill_promote  # Move a quarantined skill into the active set.
-#   - skill_refine  # Revise an existing active skill or playbook.
+#   - skill_create  # Write a new skill; it is live and carried once made or approved.
+#   - skill_refine  # Report a skill that went wrong, revise, revert, or retire one.
 #   - tool_register  # Rescan the tools folder and report what registered.
 #   Checking your own state
 #   - breaker_reset  # Clears one open circuit breaker so the runtime tries that capability again now.
@@ -230,6 +229,5 @@ core:
 #   - workspace_hold  # Says which of the operator's own documents a change must be asked about, and changes that.
 #   - workspace_pending  # List what is waiting on the operator to decide.
 #   Finding a playbook
-#   - playbook_judge  # Keep a playbook or drop it, on the operator's word.
 #   - playbook_record  # How often each playbook was used, how those turns went, and what they cost.
 #   - playbook_search  # Read the whole of a playbook the turn is carrying only as a line.

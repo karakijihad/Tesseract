@@ -343,22 +343,6 @@ roles:
       Fires when a task has been accepted as done, one model call per task
       read, and none on a day nothing was finished.
 
-  skill_refinement:
-    mode: active
-    chain: chain_1
-    daily_budget_usd: 0.5
-    notes: >-
-      Fires on evidence rather than on a clock, so it is a few calls on the
-      days enough has happened and none on the rest.
-
-  skill_suggest:
-    mode: active
-    chain: chain_1
-    daily_budget_usd: 0.5
-    notes: >-
-      The other half of the learning loop, on the same shape: enough new
-      digests to read across, or nothing.
-
   provider_watch:
     mode: active
     chain: chain_1

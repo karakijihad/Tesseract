@@ -39,11 +39,16 @@ an omission: it says the work is finished, and the runtime turns the boundary
 into a `reset` that says so rather than asking again. The cheapest way out of
 being asked again is to invent a remaining item, so it never asks.
 
-**It takes effect at the END of the turn, not inside it.** `reset()` rewrites
-the history in place, and doing that mid-turn folds away the assistant message
-carrying the pending `tool_use` block before its `tool_result` is appended.
-This records the decision; `mirror/server/after_turn.py` acts on it, and that
-is the boundary both the cockpit and a channel already call.
+**It takes effect at the end of the turn, and the turn ends right here.**
+`reset()` rewrites the history in place, and doing that inside this call would
+fold away the assistant message carrying the pending `tool_use` block before
+its `tool_result` is appended, so this only records the decision. What is
+different now is how soon "the end of the turn" arrives: once this step's tool
+results (this call's and any it ran alongside) are back, the runtime stops
+asking the model for another step and the turn ends there, so the boundary
+this recorded is taken next, not after however much more work the turn would
+otherwise have gone on to do. `mirror/server/after_turn.py` is that boundary,
+and it is the one both the cockpit and a channel already call.
 
 A turn that outgrows the ceiling on its own is answered the same way and for
 the same reason: it is let finish, and the boundary it owes is taken the
@@ -70,16 +75,17 @@ log = logging.getLogger(__name__)
 #: consequence rather than the mechanism.
 _CONFIRMED = {
     Continuation.CONTINUE: (
-        "The work carries on at the end of this turn with the room made back. "
-        "What you wrote about where the work stands is handed to the turn "
-        "that follows, and what this conversation taught you is being written "
-        "to memory alongside it."
+        "This turn ends now, once this step's tool results are back. The work "
+        "carries on after that with the room made back. What you wrote about "
+        "where the work stands is handed to the turn that follows, and what "
+        "this conversation taught you is being written to memory alongside it."
     ),
     Continuation.RESET: (
-        "This conversation ends at the end of this turn. What you wrote about "
-        "where the work stands is kept and what it taught you is being written "
-        "to memory in the background, and the next thing you are asked starts "
-        "from a clean slate."
+        "This turn ends now, once this step's tool results are back, and this "
+        "conversation ends with it. What you wrote about where the work "
+        "stands is kept and what it taught you is being written to memory in "
+        "the background, and the next thing you are asked starts from a "
+        "clean slate."
     ),
 }
 

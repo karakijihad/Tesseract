@@ -362,12 +362,26 @@ export interface SessionStatsData {
   // can never clear, so a fullness bar has to divide THIS by
   // `boundaryCeiling`. Optional for the same reason as the rest.
   conversation_tokens?: number;
+  // What the tool list costs, priced the same structural way the Conscience
+  // panel prices it (`request_size.measure_tools`), and `system_tokens` plus
+  // this: what every request sends before the conversation. Both optional so
+  // a backend that has not picked up this field yet reports the head alone
+  // rather than a chip that crashes on a missing number.
+  tools_tokens?: number;
+  payload_tokens?: number;
+  // Everything `payload_tokens` does not cover: the per-turn late block
+  // (clock, memory capsule, directives) plus the conversation itself.
+  // `conversation_tokens` alone under counts the whole request by the late
+  // block's size, which every request carries, so the true total is
+  // `payload_tokens + rest_tokens`, never `payload_tokens + conversation_tokens`.
+  // Optional for the same reason as the rest.
+  rest_tokens?: number;
 }
 
 /** Where the boundary actually happens, which is what a fullness figure is
- *  measured against. `boundary_trigger_tokens` has the manifest taken out of
- *  it; `compact_threshold_tokens` is the setting applied to the whole window,
- *  and stands in only when a measurement failed. Mirrors
+ *  measured against. `boundary_trigger_tokens` has the head and the tool list
+ *  taken out of it; `compact_threshold_tokens` is the setting applied to the
+ *  whole window, and stands in only when a measurement failed. Mirrors
  *  `brain/context_report.py::boundary_ceiling`, so the bar and the answer the
  *  assistant gives cannot disagree. */
 export function boundaryCeiling(stats: SessionStatsData): number {

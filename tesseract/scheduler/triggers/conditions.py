@@ -30,10 +30,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -86,15 +85,6 @@ class Condition:
     summary: str
     required_config: tuple[str, ...]
     evaluate: Callable[[TriggerContext], Awaitable[Verdict]]
-
-
-def _home() -> Path:
-    """`TESSERACT_HOME` resolved AT CALL TIME — never an import constant, so a
-    test that sets it before evaluating never counts production rows."""
-    from tesseract.paths import TESSERACT_HOME
-
-    override = os.environ.get("TESSERACT_HOME")
-    return Path(override).resolve() if override else TESSERACT_HOME
 
 
 def _threshold(ctx: TriggerContext, key: str) -> int:
@@ -255,42 +245,6 @@ def _count_newer(rows: list[dict[str, Any]], watermark: datetime | None) -> int:
     return sum(1 for row in rows if _is_newer(row.get("ts"), watermark))
 
 
-# ── volume: new daily digests ─────────────────────────────
-
-
-async def _digest_volume(ctx: TriggerContext) -> Verdict:
-    minimum = _threshold(ctx, "min_new_digests")
-    fresh = await asyncio.to_thread(_count_new_digests, ctx.config, ctx.watermark)
-    if fresh < minimum:
-        return Verdict(False, f"{fresh} of {minimum} new daily digests")
-    return Verdict(True, f"{fresh} new daily digests since the last pass")
-
-
-def _count_new_digests(config: dict[str, Any], watermark: datetime | None) -> int:
-    """Digests are `memory-store/daily/YYYY-MM-DD.md`, so the day is the
-    filename. Counted from the name rather than the mtime: a store copied to a
-    new machine keeps its dates and loses its timestamps, and locked decision 5
-    is that copying canonical state carries the assistant with it."""
-    override = config.get("daily_dir")
-    daily = Path(override) if override else _home() / "memory-store" / "daily"
-    if not daily.exists():
-        return 0
-    cutoff = watermark.date() if watermark else None
-    count = 0
-    try:
-        files = list(daily.glob("*.md"))
-    except OSError:
-        return 0
-    for path in files:
-        try:
-            day = date.fromisoformat(path.stem)
-        except ValueError:
-            continue
-        if cutoff is None or day > cutoff:
-            count += 1
-    return count
-
-
 # ── volume: real traffic said a provider is down ──────────
 
 
@@ -388,12 +342,6 @@ CONDITIONS: dict[str, Condition] = {
             summary="enough tasks have closed done to read one for a procedure",
             required_config=("min_new_tasks",),
             evaluate=_tasks_done_volume,
-        ),
-        Condition(
-            name="digest_volume",
-            summary="enough new daily digests have accumulated to read across",
-            required_config=("min_new_digests",),
-            evaluate=_digest_volume,
         ),
         Condition(
             name="provider_failover",

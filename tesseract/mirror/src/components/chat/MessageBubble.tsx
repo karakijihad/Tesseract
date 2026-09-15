@@ -10,8 +10,10 @@ import { ENTITY_FALLBACK } from '../../hooks/useEntityName';
 import { useWebSocketStore } from '../../stores/websocket';
 import { Markdown } from '../common/Markdown';
 import { ChatPdfPreview } from './ChatPdfPreview';
+import { ContinuityCard } from './ContinuityCard';
 import { FoldMarker } from './FoldMarker';
 import { RuntimeNote } from './RuntimeNote';
+import { hasContinuityContent, parseContinuityPackage } from '../../lib/continuityPackage';
 import { ModelBadge } from './ModelBadge';
 import { ToolCallPill } from './ToolCallPill';
 import { Hint } from '../ui/Hint';
@@ -344,6 +346,14 @@ export const MessageBubble = memo(function MessageBubble(props: Props) {
     return <FoldMarker timestamp={props.message.timestamp} />;
   }
   if (props.message.role === 'runtime') {
+    // A continuity package is read by its CONTENT, not by which mark carried
+    // it: the live boundary note and the persisted `carry_on`/`continuity`
+    // message are the same text under different marks, and drawing them
+    // through the same parse is what makes them read as the same event.
+    const pkg = parseContinuityPackage(props.message.content);
+    if (pkg && hasContinuityContent(pkg)) {
+      return <ContinuityCard package={pkg} timestamp={props.message.timestamp} />;
+    }
     return (
       <RuntimeNote
         origin={props.message.runtimeOrigin}

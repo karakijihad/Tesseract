@@ -718,6 +718,7 @@ def _kept() -> dict[str, Kept]:
 
     from tesseract.brain.cost.overage import unlocks_path
     from tesseract.orchestrator.autonomy.agenda_history import history_dir
+    from tesseract.orchestrator.autonomy.verdicts import verdicts_dir
     from tesseract.orchestrator.watchman.acknowledged import (
         store_path as watchman_acknowledged_path,
     )
@@ -739,6 +740,16 @@ def _kept() -> dict[str, Kept]:
                 "agenda that does not age."
             ),
             where=lambda: (history_dir(),),
+        ),
+        Kept(
+            key="agenda_verdicts",
+            title="What you said about each finished task",
+            why=(
+                "One line per key you pressed on a finished task: good, bad or "
+                "unused. It is the only record of whether the work was what you "
+                "wanted, and the rows it judges never age, so it does not either."
+            ),
+            where=lambda: (verdicts_dir(),),
         ),
         Kept(
             key="audit_log",

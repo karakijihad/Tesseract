@@ -164,6 +164,22 @@ def load_tool_result_window_share(path: Path) -> float:
     return value
 
 
+def load_schema_density_tolerance(path: Path) -> float:
+    """How far a measured schema figure may sit from the declared one, as a
+    fraction of it, before the check raises a card. Below one: a tolerance of
+    the whole figure would accept any reading at all."""
+    value = _load_positive_float(path, "schema_density_tolerance")
+    if value >= 1:
+        raise ValueError(f"schema_density_tolerance must be below 1, got {value}")
+    return value
+
+
+def load_schema_density_recheck_days(path: Path) -> float:
+    """How old a declared schema figure's last reading may be before it is
+    measured again."""
+    return _load_positive_float(path, "schema_density_recheck_days")
+
+
 @dataclass(frozen=True)
 class ToolResultSpill:
     """When a tool result is saved to disk instead of sent whole."""

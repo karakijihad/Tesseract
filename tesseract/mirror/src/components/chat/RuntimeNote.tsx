@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 import { Disclosure } from '../common/Disclosure';
+import { Markdown } from '../common/Markdown';
 import './RuntimeNote.css';
 
 interface Props {
@@ -83,9 +84,9 @@ export function RuntimeNote({ origin, content, timestamp }: Props) {
         )}
       </div>
       {open && hasBody && (
-        <p className="runtime-note__body t-meta" id={bodyId}>
-          {content}
-        </p>
+        <div className="runtime-note__body t-meta" id={bodyId}>
+          <Markdown variant="block">{content}</Markdown>
+        </div>
       )}
     </div>
   );

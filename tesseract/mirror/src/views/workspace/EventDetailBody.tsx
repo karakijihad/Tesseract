@@ -454,31 +454,57 @@ function SkillApprovalBody({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
+/** What the one-line origin sentence says, for a `skill_refinement` card.
+ *  `revise` is a fixer's rewrite; `revert` restores an earlier revision.
+ *  Older cards carry neither, so the sentence is silent rather than guessed. */
+function refinementOriginLine(origin: string): string {
+  if (origin === 'revert') return 'This restores an earlier revision of the skill.';
+  if (origin === 'revise') return 'This is a rewrite proposed after the skill was used.';
+  return '';
+}
+
 function SkillRefinementBody({ payload }: { payload: Record<string, unknown> }) {
   const name = asString(payload.name) ?? '';
+  const origin = asString(payload.origin) ?? '';
+  const rationale = asString(payload.rationale) ?? '';
+  const proposedMarkdown = asString(payload.proposed_markdown) ?? '';
+  const currentMarkdown = asString(payload.current_markdown) ?? '';
+  const oneLiner = refinementOriginLine(origin);
+
+  // Older cards were filed with a measured tally instead of an origin and a
+  // rationale. Both shapes can be sitting in the inbox at once, so this
+  // block draws only when there is a tally to show and says nothing when
+  // there is not.
   const stats = payload.stats as {
     loads?: number;
     corrections?: number;
     errors?: number;
     unattributable?: number;
   } | undefined;
-  const loads = asNumber(stats?.loads) ?? 0;
-  const corrections = asNumber(stats?.corrections) ?? 0;
+  const loads = asNumber(stats?.loads);
+  const corrections = asNumber(stats?.corrections);
   const errors = asNumber(stats?.errors) ?? 0;
   const unattributable = asNumber(stats?.unattributable) ?? 0;
   const version = asString(payload.version) ?? '';
   const evidence = asString(payload.evidence) ?? '';
-  const proposedMarkdown = asString(payload.proposed_markdown) ?? '';
-  const currentMarkdown = asString(payload.current_markdown) ?? '';
+
   return (
     <div className="workspace-detail-body">
       <dl className="workspace-detail-dl">
         <dt className="t-meta">skill</dt>
         <dd>{name || <span className="t-meta">—</span>}</dd>
-        <dt className="t-meta">revision</dt>
-        <dd>{version ? `v${version}` : <span className="t-meta">—</span>}</dd>
-        <dt className="t-meta">measured</dt>
-        <dd>{corrections} of {loads} loads were corrected afterwards</dd>
+        {version && (
+          <>
+            <dt className="t-meta">revision</dt>
+            <dd>v{version}</dd>
+          </>
+        )}
+        {loads !== null && corrections !== null && (
+          <>
+            <dt className="t-meta">measured</dt>
+            <dd>{corrections} of {loads} loads were corrected afterwards</dd>
+          </>
+        )}
         {(errors > 0 || unattributable > 0) && (
           <>
             <dt className="t-meta">not counted</dt>
@@ -491,6 +517,13 @@ function SkillRefinementBody({ payload }: { payload: Record<string, unknown> }) 
           </>
         )}
       </dl>
+      {oneLiner && <p>{oneLiner}</p>}
+      {rationale && (
+        <>
+          <h4 className="workspace-detail-section-head t-meta">Why</h4>
+          <p>{rationale}</p>
+        </>
+      )}
       {evidence && (
         <>
           <h4 className="workspace-detail-section-head t-meta">What was measured</h4>
@@ -510,6 +543,43 @@ function SkillRefinementBody({ payload }: { payload: Record<string, unknown> }) 
           <h4 className="workspace-detail-section-head t-meta">Current SKILL.md</h4>
           <pre className="workspace-event-agent-pre">{currentMarkdown}</pre>
         </>
+      )}
+    </div>
+  );
+}
+
+function SkillRetirementBody({ payload }: { payload: Record<string, unknown> }) {
+  const name = asString(payload.name) ?? '';
+  const liveVersionRaw = payload.live_version;
+  const liveVersion =
+    typeof liveVersionRaw === 'string'
+      ? liveVersionRaw
+      : typeof liveVersionRaw === 'number'
+        ? String(liveVersionRaw)
+        : '';
+  const rationale = asString(payload.rationale) ?? '';
+  const currentMarkdown = asString(payload.current_markdown) ?? '';
+  return (
+    <div className="workspace-detail-body">
+      <dl className="workspace-detail-dl">
+        <dt className="t-meta">skill</dt>
+        <dd>{name || <span className="t-meta">—</span>}</dd>
+        <dt className="t-meta">live revision</dt>
+        <dd>{liveVersion ? `v${liveVersion}` : <span className="t-meta">—</span>}</dd>
+      </dl>
+      {rationale && (
+        <>
+          <h4 className="workspace-detail-section-head t-meta">Why</h4>
+          <p>{rationale}</p>
+        </>
+      )}
+      {currentMarkdown ? (
+        <>
+          <h4 className="workspace-detail-section-head t-meta">Current SKILL.md</h4>
+          <pre className="workspace-event-agent-pre">{currentMarkdown}</pre>
+        </>
+      ) : (
+        <p className="t-meta">No SKILL.md was captured with this card.</p>
       )}
     </div>
   );
@@ -554,8 +624,9 @@ export function EventDetailBody({ event }: Props) {
     case 'skill_approval':
       return <SkillApprovalBody payload={payload} />;
     case 'skill_refinement':
-    case 'skill_retirement':
       return <SkillRefinementBody payload={payload} />;
+    case 'skill_retirement':
+      return <SkillRetirementBody payload={payload} />;
     case 'working_set_proposal':
     case 'tuning_proposal':
     case 'project_proposal':

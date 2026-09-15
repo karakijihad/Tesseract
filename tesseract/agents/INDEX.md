@@ -35,6 +35,7 @@ alongside these with a mark saying which is which.
 | provider-watcher | agents_default | Daily outside-world summary: new models, price changes, retirements, tool releases. |
 | repo-auditor | agents_default | Reads the whole codebase for one named risk. Slow, so it runs only when you ask. |
 | research-brief | agents_default | Researches a question across the library and the web and returns a short brief with its sources. |
+| skill-fixer | agents_default | Revises one skill when the agent that followed it reports something went wrong. Reads the turn record and the skill before deciding, never the reporting agent's own account. Writes at most one revision. |
 | vault-digest | agents_default | Writes the library paragraph of the daily brief: what was added or rewritten in the last day. |
 | vault-librarian | agents_default | Turns raw library sources into linked pages, and answers questions out of them. |
 | vault-lint | agents_default | Finds two library pages that disagree about the same thing and says how. You decide what to do about it. |

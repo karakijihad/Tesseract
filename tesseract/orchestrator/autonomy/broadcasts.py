@@ -76,6 +76,18 @@ BROADCASTS: dict[str, Broadcast] = {
         producer="mirror/server/app.py::_on_item_parked + ::_on_worker_timeout",
         must_be_seen=True,
     ),
+    "task_closed": Broadcast(
+        summary=(
+            "A task finished, and it wants to know whether the work was "
+            "good, bad, or not used."
+        ),
+        why=(
+            "It learns from what you tell it about work it already did. A "
+            "task that closes and is never scored teaches it nothing, and "
+            "this is how the question reaches you away from the desk."
+        ),
+        producer="brain/boot.py::_notify_task_closed",
+    ),
     "recovery_summary": Broadcast(
         summary="What was still open when the app restarted, and what it did about it.",
         why=(

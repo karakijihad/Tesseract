@@ -11,8 +11,17 @@ import { createPortal } from "react-dom";
 interface HintProps {
   /** Absent renders the children bare, with no popover and no listeners — for
    *  a hint that only exists in one state (a disabled control explaining why).
-   *  The alternative was callers passing '' and getting an empty box. */
-  label?: string;
+   *  The alternative was callers passing '' and getting an empty box.
+   *
+   *  A plain sentence for almost every caller. A few readings (the HUD's
+   *  request-size chip) need more than one sentence can hold without losing
+   *  the numbers to a wall of prose, so this also takes a small read-only
+   *  node such as `DataTable`'s rows. Either way it renders unconditionally
+   *  in the hidden `.hint-label` span, so assistive tech and a test can read
+   *  it without hovering; a caller passing a rich node should still keep the
+   *  outer control's own `aria-label` a plain sentence, because a node here
+   *  is not guaranteed to read cleanly on its own. */
+  label?: ReactNode;
   children: ReactNode;
   /** Where the popover renders relative to the trigger. Defaults to 'top'.
    *  'right' serves the HUD section stacks (2026-07-31) — vertical icon

@@ -125,6 +125,51 @@ def _strip_control_sequences(text: str) -> str:
     return text
 
 
+# Shared cancellation-cleanup shape for `race_communicate` and
+# `run_subprocess_with_sink`. Both wrap their spawn-to-reap region in ONE
+# `try`/`finally`, and the `finally` runs the reap (plus, for the sink
+# variant, the `cli_end` emit) as ONE `asyncio.shield`ed call. Every exit —
+# normal completion, timeout, the watcher observing cancellation, a
+# `CancelledError` delivered to the call itself, and a SECOND cancellation
+# landing while that cleanup is still running — goes through that one path.
+# These properties hold at once, not one at a time:
+#
+# 1. The process tree is killed/reaped on every exit, and that happens
+#    first, before the tasks that fed it are torn down.
+# 2. No orphaned tasks (stdout/stderr drain, pump, wait, watch) survive.
+# 3. `cli_end` is emitted exactly once on every exit of the sink variant,
+#    carrying the right exit code.
+# 4. A cancellation cannot interrupt the reap into an unbounded/hung state
+#    (`containment.reap` carries its own timeout; cancelling and gathering
+#    an already-finished task is a no-op) — but a cancellation landing
+#    DURING cleanup must not skip `cli_end` either. One shielded call, with
+#    no unshielded gap inside it, is what makes both true together: a
+#    second cancellation can only interrupt the CALLER's await of the
+#    shield, never the shielded work itself, which keeps running until it
+#    has reaped the tree and (for the sink variant) emitted `cli_end`.
+# 5. The cancellation itself still reaches the caller; cleanup never
+#    swallows it.
+# 6. Timeout and pipe-stays-open behaviour (`DRAIN_GRACE_SECONDS`) are
+#    unchanged.
+# 7. The watcher (`cancel_event`) is never load-bearing: a call with none
+#    takes the same path through the same `finally`.
+async def _reap_all(
+    process: asyncio.subprocess.Process, tasks: Sequence[asyncio.Task | None]
+) -> None:
+    """Kill the process tree, then cancel and gather every helper task.
+
+    Bounded and idempotent: `containment.reap` carries its own timeout and
+    returns at once on a process that already exited, and cancelling +
+    gathering a task that is already done is a no-op. Never raises.
+    """
+    await containment.reap(process)
+    live = [t for t in tasks if t is not None]
+    for t in live:
+        t.cancel()
+    if live:
+        await asyncio.gather(*live, return_exceptions=True)
+
+
 async def race_communicate(
     process: asyncio.subprocess.Process,
     cancel_event: asyncio.Event | None,
@@ -162,12 +207,7 @@ async def race_communicate(
     watch_task = (
         asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
     )
-
-    async def _reap(*tasks) -> None:
-        live = [t for t in tasks if t is not None]
-        for t in live:
-            t.cancel()
-        await asyncio.gather(*live, return_exceptions=True)
+    tasks: list[asyncio.Task | None] = [out_task, err_task, wait_task, watch_task]
 
     #: The one await between spawning the process and reaping it. A
     #: cancellation delivered HERE used to leave the subprocess running with
@@ -180,49 +220,34 @@ async def race_communicate(
     #: passes no event at all — for that tool this was never a race, only the
     #: outcome. Killing here is the backstop; the branch below is still what
     #: reports a clean cancellation when it wins.
-    waiters = {wait_task} | ({watch_task} if watch_task is not None else set())
     try:
+        waiters = {wait_task} | ({watch_task} if watch_task is not None else set())
         done, _ = await asyncio.wait(
             waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
         )
-    except asyncio.CancelledError:
-        # Shielded for the reason the awaits below are: a second cancellation
-        # arriving here cuts an unshielded await short, and the tree would
-        # outlive the call it belongs to.
-        await asyncio.shield(containment.reap(process))
-        # `wait_task` is already `process.wait()`, so this reaps the zombie
-        # without starting a second wait for `_reap` to cancel a line later.
-        await asyncio.shield(wait_task)
-        await _reap(out_task, err_task, wait_task, watch_task)
-        raise
 
-    if watch_task is not None and watch_task in done and wait_task not in done:
-        # Cancel fired before the process exited — kill and drain everything.
-        await containment.reap(process)
-        await process.wait()
-        await _reap(out_task, err_task, wait_task, watch_task)
-        return None  # caller should return a "cancelled" ToolResult
-    if wait_task not in done:
-        # Timeout — process never exited. Kill and reap before raising.
-        await containment.reap(process)
-        await process.wait()
-        await _reap(out_task, err_task, wait_task, watch_task)
-        raise asyncio.TimeoutError
-    # Process exited. Reap the watcher, then give the readers a short grace to
-    # finish before abandoning a pipe a grandchild may still hold open.
-    if watch_task is not None:
-        await _reap(watch_task)
-    # `return_exceptions=True` so a transport error in a drain task (abrupt
-    # pipe close → ConnectionResetError) becomes a return value rather than
-    # escaping the TimeoutError handler and leaving the other task unreaped.
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(out_task, err_task, return_exceptions=True),
-            timeout=DRAIN_GRACE_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        await _reap(out_task, err_task)
-    return bytes(out_buf), bytes(err_buf)
+        if watch_task is not None and watch_task in done and wait_task not in done:
+            # Cancel fired before the process exited.
+            return None  # caller should return a "cancelled" ToolResult
+        if wait_task not in done:
+            # Timeout — process never exited.
+            raise asyncio.TimeoutError
+
+        # Process exited. Give the readers a short grace to finish before
+        # `finally` abandons a pipe a grandchild may still hold open.
+        # `return_exceptions=True` so a transport error in a drain task
+        # (abrupt pipe close → ConnectionResetError) becomes a return value
+        # rather than escaping and leaving the other task unreaped.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(out_task, err_task, return_exceptions=True),
+                timeout=DRAIN_GRACE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass
+        return bytes(out_buf), bytes(err_buf)
+    finally:
+        await asyncio.shield(_reap_all(process, tasks))
 
 
 async def run_subprocess_with_sink(
@@ -312,12 +337,18 @@ async def run_subprocess_with_sink(
     watch_task = (
         asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
     )
+    tasks: list[asyncio.Task | None] = [pump_task, wait_task, watch_task]
+    # Set once the process is known to have exited; -1 covers every other
+    # exit (cancelled, timed out) and is what `cli_end` reports for them.
+    exit_code = -1
 
-    async def _reap(*tasks) -> None:
-        live = [t for t in tasks if t is not None]
-        for t in live:
-            t.cancel()
-        await asyncio.gather(*live, return_exceptions=True)
+    async def _finish() -> None:
+        # Reap the tree first, THEN the terminal event — as one shielded
+        # unit (see the invariant comment above `_reap_all`), so a second
+        # cancellation landing here can interrupt the CALLER's await of
+        # this coroutine but never split the two apart.
+        await _reap_all(process, tasks)
+        await _emit("cli_end", {"exit_code": exit_code})
 
     #: The one await between spawning the process and reaping it. A
     #: cancellation delivered HERE used to leave the subprocess running with
@@ -330,90 +361,69 @@ async def run_subprocess_with_sink(
     #: passes no event at all — for that tool this was never a race, only the
     #: outcome. Killing here is the backstop; the branch below is still what
     #: reports a clean cancellation when it wins.
-    waiters = {wait_task} | ({watch_task} if watch_task is not None else set())
     try:
+        waiters = {wait_task} | ({watch_task} if watch_task is not None else set())
         done, _ = await asyncio.wait(
             waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
         )
-    except asyncio.CancelledError:
-        # Shielded for the reason the awaits below are: a second cancellation
-        # arriving here cuts an unshielded await short, and the tree would
-        # outlive the call it belongs to.
-        await asyncio.shield(containment.reap(process))
-        await asyncio.shield(wait_task)
-        await _reap(pump_task, wait_task, watch_task)
-        # Shielded, for the reason the helper documents: an unshielded await
-        # in a cancelling frame never reaches the sink, and the card would
-        # stream forever for a call that has stopped.
-        await _emit("cli_end", {"exit_code": -1}, shielded=True)
-        raise
 
-    if watch_task is not None and watch_task in done and wait_task not in done:
-        # Cancel fired before the process exited — kill and drain.
-        await containment.reap(process)
-        await process.wait()
-        await _reap(pump_task, wait_task, watch_task)
-        await _emit("cli_end", {"exit_code": -1})
-        return ToolResult(output=f"{tool_name} cancelled", is_error=True)
-    if wait_task not in done:
-        # Timeout — process never exited. Kill, reap, report — WITH the tail
-        # of whatever it already streamed, so the model can see the run was
-        # productive rather than assuming nothing happened. A bare
-        # "timed out" string costs a full re-delegation.
-        await containment.reap(process)
-        await process.wait()
-        await _reap(pump_task, wait_task, watch_task)
-        await _emit("cli_end", {"exit_code": -1})
-        output = f"{tool_name} timed out after {timeout}s"
-        tail = "".join(buffer).strip()[-_TIMEOUT_TAIL_CHARS:]
-        if tail:
-            output += f"\n\nTranscript tail before the kill:\n{tail}"
-        return ToolResult(output=output, is_error=True, timed_out=True)
+        if watch_task is not None and watch_task in done and wait_task not in done:
+            # Cancel fired before the process exited.
+            return ToolResult(output=f"{tool_name} cancelled", is_error=True)
+        if wait_task not in done:
+            # Timeout — process never exited. Report it WITH the tail of
+            # whatever it already streamed, so the model can see the run was
+            # productive rather than assuming nothing happened. A bare
+            # "timed out" string costs a full re-delegation.
+            output = f"{tool_name} timed out after {timeout}s"
+            tail = "".join(buffer).strip()[-_TIMEOUT_TAIL_CHARS:]
+            if tail:
+                output += f"\n\nTranscript tail before the kill:\n{tail}"
+            return ToolResult(output=output, is_error=True, timed_out=True)
 
-    # Process exited. Reap the watcher, then give the pump a short grace to
-    # drain remaining output before abandoning a pipe a grandchild may hold.
-    if watch_task is not None:
-        await _reap(watch_task)
-    rc = wait_task.result()
-    # `return_exceptions=True` so a transport error in the pump (abrupt pipe
-    # close → ConnectionResetError) becomes a return value rather than escaping
-    # the TimeoutError handler; buffered output so far is still returned below.
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(pump_task, return_exceptions=True),
-            timeout=DRAIN_GRACE_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        await _reap(pump_task)
+        # Process exited. Give the pump a short grace to drain remaining
+        # output before `finally` abandons a pipe a grandchild may hold.
+        exit_code = wait_task.result()
+        # `return_exceptions=True` so a transport error in the pump (abrupt
+        # pipe close → ConnectionResetError) becomes a return value rather
+        # than escaping; buffered output so far is still returned below.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(pump_task, return_exceptions=True),
+                timeout=DRAIN_GRACE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass
 
-    if output_parser is not None:
-        trailing = output_parser.flush()
-        if trailing:
-            await _emit("cli_output", {"delta": trailing})
-            if buffer_len < _MAX_BUFFER_CHARS:
-                buffer.append(trailing)
-                buffer_len += len(trailing)
+        if output_parser is not None:
+            trailing = output_parser.flush()
+            if trailing:
+                await _emit("cli_output", {"delta": trailing})
+                if buffer_len < _MAX_BUFFER_CHARS:
+                    buffer.append(trailing)
+                    buffer_len += len(trailing)
 
-    await _emit("cli_end", {"exit_code": rc})
-    out = "".join(buffer).strip()
-    if output_parser is not None:
-        final = output_parser.final_output()
-        if final:
-            out = final
+        out = "".join(buffer).strip()
+        if output_parser is not None:
+            final = output_parser.final_output()
+            if final:
+                out = final
 
-    if rc != 0:
-        combined = f"Exit code: {rc}"
-        if out:
-            combined += f"\noutput:\n{out}"
-        return ToolResult(output=combined, is_error=True)
+        if exit_code != 0:
+            combined = f"Exit code: {exit_code}"
+            if out:
+                combined += f"\noutput:\n{out}"
+            return ToolResult(output=combined, is_error=True)
 
-    if not out:
-        return ToolResult(output=empty_message, is_error=True)
+        if not out:
+            return ToolResult(output=empty_message, is_error=True)
 
-    # The CLI can exit 0 while the turn itself failed (claude stream-json
-    # `result` events with subtype error_max_turns / error_during_execution).
-    # Honor the parser's turn-level verdict so the model sees the failure.
-    if output_parser is not None and getattr(output_parser, "is_error", False):
-        return ToolResult(output=out, is_error=True)
+        # The CLI can exit 0 while the turn itself failed (claude stream-json
+        # `result` events with subtype error_max_turns / error_during_execution).
+        # Honor the parser's turn-level verdict so the model sees the failure.
+        if output_parser is not None and getattr(output_parser, "is_error", False):
+            return ToolResult(output=out, is_error=True)
 
-    return ToolResult(output=out, metadata={"tool": tool_name, "exit_code": 0})
+        return ToolResult(output=out, metadata={"tool": tool_name, "exit_code": 0})
+    finally:
+        await asyncio.shield(_finish())

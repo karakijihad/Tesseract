@@ -408,14 +408,27 @@ def _to_anthropic_messages(
     trimming) are stripped, mirroring the openai adapter's orphan guard.
     `_reasoning` marker messages are Responses-API-internal — skipped.
 
+    A `role:"user"` message immediately following one of those merged tool
+    results folds into the same message rather than opening a second one, for
+    the same reason: the API rejects two consecutive `user` messages, and
+    history can produce that shape now that a turn may end the moment its own
+    tool results are back (`session_continue`), with no assistant turn
+    between them and whatever the operator says next. `_append_user` is where
+    that merge happens, and only into a trailing message that is already
+    carrying tool results — the runtime's own per-turn blocks (the late
+    section, the turn injection) are `role:"user"` too and are deliberately
+    kept as their own message below the cache boundary, never folded into
+    whatever came before them.
+
     The third return value carries `CACHE_BOUNDARY` across the translation.
     It cannot stay an index into the input, because the mapping is not one to
     one in either direction: a source message emits one entry or none (an
     empty assistant turn is dropped, and so is an orphaned tool result), and
-    consecutive tool results merge into an entry that already exists. So it is
-    read off `out` at the first message PAST the marked one, which is the
-    earliest moment the marked one is certainly finished. `None` when nothing
-    was marked, or when nothing was emitted.
+    consecutive tool results (or a user turn right after them) merge into an
+    entry that already exists. So it is read off `out` at the first message
+    PAST the marked one, which is the earliest moment the marked one is
+    certainly finished — after any such merge, not before it. `None` when
+    nothing was marked, or when nothing was emitted.
     """
     system_parts: list[str] = []
     out: list[dict[str, Any]] = []
@@ -425,10 +438,11 @@ def _to_anthropic_messages(
     )
     boundary_at: int | None = None
 
-    def _append_tool_result(block: dict[str, Any]) -> None:
-        # Merge into a trailing user message that is already carrying
-        # tool_result blocks; otherwise open a new one.
-        if (
+    def _trailing_tool_results() -> bool:
+        # True when `out[-1]` is a user message already carrying tool_result
+        # blocks — the one shape both `_append_tool_result` and `_append_user`
+        # fold into instead of opening a second user message.
+        return bool(
             out
             and out[-1]["role"] == "user"
             and isinstance(out[-1]["content"], list)
@@ -436,10 +450,61 @@ def _to_anthropic_messages(
                 isinstance(b, dict) and b.get("type") == "tool_result"
                 for b in out[-1]["content"]
             )
-        ):
+        )
+
+    def _append_tool_result(block: dict[str, Any]) -> None:
+        # Merge into a trailing user message that is already carrying
+        # tool_result blocks; otherwise open a new one.
+        if _trailing_tool_results():
             out[-1]["content"].append(block)
         else:
             out.append({"role": "user", "content": [block]})
+
+    def _append_user(content: Any, at_i: int) -> None:
+        # The Messages API rejects two consecutive `user` messages. A history
+        # ending in tool results used to always be followed by the assistant
+        # turn that read them, never by another `role:"user"` message — but a
+        # turn can now end the moment its own tool results are back
+        # (`session_continue` stopping it there), so the operator's next
+        # message can land immediately after them, with no assistant turn in
+        # between.
+        #
+        # Merging is gated on TWO things at once, and dropping either one
+        # reopens a case this was already broken by:
+        #   1. `_trailing_tool_results()` narrows the shape — only a message
+        #      that already carries tool_result blocks is a fold target, so
+        #      two ordinary user turns (which history never produces back to
+        #      back) are left for review rather than silently combined.
+        #   2. `at_i <= boundary_src` narrows WHEN — the runtime's own
+        #      per-turn blocks (`_LATE_PROMPT_LEAD`, the turn injection) are
+        #      `role:"user"` too, and they are appended AFTER `CACHE_BOUNDARY`
+        #      on purpose: everything past it is this turn's own volatile
+        #      state, never reused, and folding one of them backward into the
+        #      settled tool_result message would smuggle per-turn bytes into
+        #      what the next turn is supposed to be able to reuse verbatim.
+        #      `boundary_src == -1` (no boundary at all, e.g. a bare unit call)
+        #      leaves nothing to protect, so every message is at-or-before it.
+        #
+        # A bare string is kept exactly as before when nothing needs merging,
+        # which is the overwhelmingly common case and the shape every existing
+        # caller and test fixture expects. Only a genuine merge switches to
+        # the block-list content shape, and only on the trailing message.
+        if isinstance(content, str):
+            if not content:
+                return
+            parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+            bare: Any = content
+        elif isinstance(content, list):
+            parts = _convert_parts(content)
+            if not parts:
+                return
+            bare = None
+        else:
+            return
+        if _trailing_tool_results() and (boundary_src == -1 or at_i <= boundary_src):
+            out[-1]["content"].extend(parts)
+        else:
+            out.append({"role": "user", "content": bare if bare is not None else parts})
 
     for i, m in enumerate(messages):
         # Read at the first message past the marked one, which is the earliest
@@ -501,13 +566,7 @@ def _to_anthropic_messages(
             continue
 
         if role == "user":
-            if isinstance(content, str):
-                if content:
-                    out.append({"role": "user", "content": content})
-            elif isinstance(content, list):
-                parts = _convert_parts(content)
-                if parts:
-                    out.append({"role": "user", "content": parts})
+            _append_user(content, i)
 
     # The marked message was the last in the list, so there was no iteration
     # past it to read.

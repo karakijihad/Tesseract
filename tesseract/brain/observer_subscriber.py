@@ -140,15 +140,22 @@ class ObserverSubscriber:
                 "observation dropped: the conversation was cleared while it ran"
             )
             return
-        # The two halves are independent: a nudge is delivered even when the
+        # The three halves are independent: a nudge is delivered even when the
         # same call had nothing worth remembering, and a failure to record one
-        # never costs the other. Neither goes to `observer_emit`, which carries
-        # the suggestion chip alone; where a nudge is read is the journal.
+        # never costs the others. None of them go to `observer_emit`, which
+        # carries the suggestion chip alone; where a nudge is read is the
+        # journal, and a skill nudge has no chip at all — it rides into the
+        # next turn the same way the others do, via injection.
         if reading.nudge is not None:
             try:
                 chat_session.ingest_boundary_nudge(reading.nudge)
             except Exception:
                 logger.exception("ingest_boundary_nudge failed")
+        if reading.skill is not None:
+            try:
+                chat_session.ingest_skill_nudge(reading.skill)
+            except Exception:
+                logger.exception("ingest_skill_nudge failed")
         suggestion = reading.suggestion
         if suggestion is None:
             return

@@ -95,9 +95,22 @@ export function handleSession(env: Envelope): void {
       // as a toast that is gone in five seconds. A reloaded conversation gets
       // the same thing back out of history (`lib/chatHistory.ts`), so this is
       // only the live half.
-      const data = env.data as { text?: string; mark?: string } | undefined;
+      //
+      // `cleared` says whether this note follows an actual clear
+      // (`turn_runner.py::announce`). When it does, the note REPLACES this
+      // chat's messages rather than appending to them: `session_reset` should
+      // already have emptied the slice by the time this arrives, but the note
+      // is the one thing the boundary is guaranteed to send, so it is what
+      // this store leans on to guarantee the chat ends up holding nothing
+      // from before the boundary, not the ordering of two separate envelopes.
+      const data = env.data as { text?: string; mark?: string; cleared?: boolean } | undefined;
       if (data?.text) {
-        chat.addRuntimeNote(env.chat_id ?? null, data.text, data.mark ?? "boundary");
+        const mark = data.mark ?? "boundary";
+        if (data.cleared) {
+          chat.startFreshWithNote(env.chat_id ?? null, data.text, mark);
+        } else {
+          chat.addRuntimeNote(env.chat_id ?? null, data.text, mark);
+        }
       }
       break;
     }

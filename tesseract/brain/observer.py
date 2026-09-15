@@ -2,7 +2,11 @@
 
 Two entry points: `observe(history, mode)` stateless one-shot, and
 `observe_incremental(new_turns, transcript, mode)` stateful (3-strike
-circuit breaker, prompts sourced from the `observer` agent definition).
+circuit breaker). Every string either sends to the model, or checks against
+what the model said, is read off the `observer` agent card
+(`agents/observer.md`) at construction time — see `ObserverPolicy` and
+`ObserverCardError` below. This module holds no prompt text and no banned
+phrase: a string the model reads belongs in the card, never here.
 
 The rolling transcript is the CALLER's — one per conversation, held by
 its `ChatSession` — so the cockpit and a channel are observed by the same
@@ -16,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -29,7 +34,6 @@ from tesseract.brain.memory_suggestion import next_observation_id
 from tesseract.brain.observation_transcript import ObservationTranscript, PtyBuffer, PtyLine
 from tesseract.brain.observer_reading import (
     EMPTY_READING,
-    READING_SCHEMA_FOR_PROMPT,
     ObserverReading,
     parse_reading,
 )
@@ -39,32 +43,216 @@ from tesseract.paths import home_dir, log_dir
 
 logger = logging.getLogger(__name__)
 
-ObserverMode = Literal["meta", "maintenance"]
+# Only one mode is implemented. The parameter stays because it is part of the
+# wire contract the REPL, the Mirror WS `/observe` command and the REST
+# `POST /api/observer/observe` route already speak (the envelope they emit
+# carries `mode` back to the caller); removing it would be a frontend change,
+# not an observer one.
+ObserverMode = Literal["meta"]
 
-_OBSERVATION_PROMPT = "Observation Prompt"
-_SUGGESTION_PROMPT = "Suggestion Prompt"
+# The two job names the card's `jobs:` frontmatter mapping must declare. Not
+# prompt text — a fixed pair of call-site identifiers, the same way `observe`
+# and `observe_incremental` are a fixed pair of methods. Which SECTION and
+# CUE each job uses is entirely the card's to say.
+_OBSERVATION_JOB = "observation"
+_READING_JOB = "reading"
 
-DEFAULT_CONTEXT_TURNS = 12
+#: The section carrying the JSON shape `{schema}` is filled from. A dedicated
+#: section rather than a frontmatter string because it is a fenced code block,
+#: not a short value, and sections merge whole under a shadow the same way
+#: `Suggestion Prompt` does.
+_READING_SCHEMA_SECTION = "Reading Schema"
 
-# Mirrors `agents/observer.md` § "Hard banlist". The model is told never to
-# emit these phrases, but it leaks them anyway when there's no real signal.
-# Treating any output that matches as `NONE` server-side keeps the right
-# panel + chat-stream surfaces clean instead of showing low-signal filler.
-_BANLIST_PHRASES: tuple[str, ...] = (
-    "something worth noting",
-    "nothing significant",
-    "a point of interest",
-    "something to consider",
-    "noteworthy moment",
-    "interesting exchange",
-)
+#: Which `{placeholder}` tokens each job's section body must contain, checked
+#: once at construction so a card missing one fails loudly instead of shipping
+#: a prompt with a literal unfilled `{schema}` in it.
+_JOB_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
+    _OBSERVATION_JOB: ("{transcript}", "{pty_context}", "{banlist}"),
+    _READING_JOB: ("{transcript}", "{pty_context}", "{schema}", "{room_left}", "{observation_id}"),
+}
 
 
-def _is_banned_observation(text: str) -> bool:
+class ObserverCardError(RuntimeError):
+    """The observer card is missing a section, a frontmatter key, or a
+    placeholder its own `jobs:` declaration says it needs.
+
+    Raised once, at construction (`ObserverPolicy.from_agent_def`, called
+    from `Observer.__init__` / `build_observer_from_config`). Callers that
+    build the observer as part of boot catch this and degrade to "no
+    observer this run" rather than crash — see `brain/boot.py::build_observer`.
+    """
+
+
+@dataclass(frozen=True)
+class ObserverJob:
+    section: str
+    cue: str
+
+
+@dataclass(frozen=True)
+class ObserverPolicy:
+    """Everything the observer's prompts and server-side checks need, read
+    off the card's frontmatter and validated once.
+
+    A plain, easily-hand-built dataclass on purpose: a test standing up a bare
+    `Observer` for something unrelated to the card (concurrency, timeouts,
+    counters) can construct a minimal one directly rather than writing a
+    throwaway card to disk.
+    """
+
+    preamble: str
+    jobs: dict[str, ObserverJob]
+    context_turns: int
+    silence: str
+    banlist: tuple[str, ...]
+    transcript_line: str
+    transcript_empty: str
+    pty_line: str
+    pty_empty: str
+    roles_observed: tuple[str, ...]
+    room_unmeasured: str
+    room_measured: str
+
+    @classmethod
+    def from_agent_def(cls, agent_def: AgentDefinition) -> "ObserverPolicy":
+        """Validate `agent_def`'s card in full and build the policy it
+        describes, or raise `ObserverCardError` naming what is missing.
+
+        Every property this class needs is checked here, once, rather than
+        discovered piecemeal on whichever call first touches it — a card
+        that loads but cannot run a turn is exactly the "fails open, sends
+        an empty system prompt" defect this phase exists to close.
+        """
+        name = agent_def.name or "observer"
+        fm = agent_def.raw_frontmatter
+
+        def _require(key: str) -> Any:
+            if key not in fm:
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter is missing required key {key!r}"
+                )
+            return fm[key]
+
+        def _require_str(key: str) -> str:
+            value = _require(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter {key!r} must be a non-empty string"
+                )
+            return value.strip()
+
+        preamble = _require_str("preamble")
+        if not agent_def.get_section(preamble):
+            raise ObserverCardError(
+                f"agent {name!r}: preamble section {preamble!r} is missing or empty"
+            )
+
+        raw_jobs = _require("jobs")
+        if not isinstance(raw_jobs, dict) or not raw_jobs:
+            raise ObserverCardError(
+                f"agent {name!r}: frontmatter 'jobs' must be a non-empty mapping"
+            )
+        jobs: dict[str, ObserverJob] = {}
+        for job_name, required_placeholders in _JOB_PLACEHOLDERS.items():
+            raw_job = raw_jobs.get(job_name)
+            if not isinstance(raw_job, dict):
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter 'jobs.{job_name}' is missing or not a mapping"
+                )
+            section = raw_job.get("section")
+            cue = raw_job.get("cue")
+            if not isinstance(section, str) or not section.strip():
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter 'jobs.{job_name}.section' is missing"
+                )
+            if not isinstance(cue, str) or not cue.strip():
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter 'jobs.{job_name}.cue' is missing"
+                )
+            section = section.strip()
+            body = agent_def.get_section(section)
+            if not body:
+                raise ObserverCardError(
+                    f"agent {name!r}: section {section!r} (jobs.{job_name}) is missing or empty"
+                )
+            for placeholder in required_placeholders:
+                if placeholder not in body:
+                    raise ObserverCardError(
+                        f"agent {name!r}: section {section!r} (jobs.{job_name}) is missing "
+                        f"placeholder {placeholder!r}"
+                    )
+            jobs[job_name] = ObserverJob(section=section, cue=cue.strip())
+
+        context_turns = _require("context_turns")
+        if isinstance(context_turns, bool) or not isinstance(context_turns, int) or context_turns <= 0:
+            raise ObserverCardError(
+                f"agent {name!r}: frontmatter 'context_turns' must be a positive integer"
+            )
+
+        silence = _require_str("silence")
+
+        raw_banlist = _require("banlist")
+        if not isinstance(raw_banlist, list):
+            raise ObserverCardError(f"agent {name!r}: frontmatter 'banlist' must be a list")
+        banlist = tuple(str(p).strip().lower() for p in raw_banlist if str(p).strip())
+
+        transcript_line = _require_str("transcript_line")
+        for placeholder in ("{role}", "{content}"):
+            if placeholder not in transcript_line:
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter 'transcript_line' is missing placeholder {placeholder!r}"
+                )
+        transcript_empty = _require_str("transcript_empty")
+
+        pty_line = _require_str("pty_line")
+        for placeholder in ("{timestamp}", "{pane_id}", "{text}"):
+            if placeholder not in pty_line:
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter 'pty_line' is missing placeholder {placeholder!r}"
+                )
+        pty_empty = _require_str("pty_empty")
+
+        raw_roles = _require("roles_observed")
+        if not isinstance(raw_roles, list) or not raw_roles:
+            raise ObserverCardError(
+                f"agent {name!r}: frontmatter 'roles_observed' must be a non-empty list"
+            )
+        roles_observed = tuple(str(r).strip() for r in raw_roles if str(r).strip())
+
+        room_unmeasured = _require_str("room_unmeasured")
+        room_measured = _require_str("room_measured")
+        for placeholder in ("{percent}", "{conversation_tokens}", "{trigger_tokens}"):
+            if placeholder not in room_measured:
+                raise ObserverCardError(
+                    f"agent {name!r}: frontmatter 'room_measured' is missing placeholder {placeholder!r}"
+                )
+
+        if not agent_def.get_section(_READING_SCHEMA_SECTION):
+            raise ObserverCardError(
+                f"agent {name!r}: section {_READING_SCHEMA_SECTION!r} is missing or empty"
+            )
+
+        return cls(
+            preamble=preamble,
+            jobs=jobs,
+            context_turns=context_turns,
+            silence=silence,
+            banlist=banlist,
+            transcript_line=transcript_line,
+            transcript_empty=transcript_empty,
+            pty_line=pty_line,
+            pty_empty=pty_empty,
+            roles_observed=roles_observed,
+            room_unmeasured=room_unmeasured,
+            room_measured=room_measured,
+        )
+
+
+def _is_banned_observation(text: str, banlist: tuple[str, ...]) -> bool:
     lowered = text.lower().strip().rstrip(".!?,;:")
     if not lowered:
         return False
-    return any(phrase in lowered for phrase in _BANLIST_PHRASES)
+    return any(phrase in lowered for phrase in banlist)
 
 def _observer_log_dir() -> Path:
     """Resolve the observer log dir at call time under `TESSERACT_HOME`.
@@ -128,6 +316,13 @@ class Observer:
         agent_def: AgentDefinition,
         cost_ledger: CostLedger | None = None,
     ) -> None:
+        # Raises `ObserverCardError` on a missing section, key or placeholder.
+        # Validated once, here, rather than per call: a card that cannot run a
+        # turn should fail at construction, not send an empty system prompt on
+        # the first call that discovers it. `build_observer_from_config`'s
+        # caller (`brain/boot.py::build_observer`) catches this per ref and
+        # degrades to no observer this run.
+        self._policy = ObserverPolicy.from_agent_def(agent_def)
         self._adapter = adapter
         self._config = config
         self._agent_def = agent_def
@@ -219,17 +414,16 @@ class Observer:
         self,
         history: list[dict[str, Any]],
         mode: ObserverMode = "meta",
-        context_turns: int = DEFAULT_CONTEXT_TURNS,
+        context_turns: int | None = None,
         *,
         session_id: str = "",
     ) -> str:
         """Stateless one-shot; does not update `self._transcript`.
 
-        `mode` is accepted for caller back-compat (REPL `/observe meta|maintenance`
-        + Mirror WS + REST). Only `meta` is implemented today; `maintenance`
-        is a deferred feature — both modes currently compose the same
-        `Observation Prompt` section. When a dedicated maintenance prompt
-        lands in `agents/observer.md`, wire it here via section selection.
+        `mode` is accepted for wire back-compat (REPL `/observe`, Mirror WS,
+        REST `POST /api/observer/observe`) — see `ObserverMode`'s docstring.
+        `context_turns=None` (the default) uses the card's own
+        `context_turns`; a caller may still override it.
 
         Every non-empty observation is appended to
         `tesseract/logs/observer/YYYY-MM-DD.jsonl` (fail-open — log
@@ -237,13 +431,8 @@ class Observer:
         observer's output outside the Mirror + the conscience heartbeat
         can eventually derive an `observer_silence` signal from it.
         """
-        if mode != "meta":
-            logger.info(
-                "observer.observe: mode=%r currently uses the meta prompt "
-                "(maintenance prompt not yet implemented — fix-pass 2026-04-20)",
-                mode,
-            )
-        trimmed = _trim_history_for_observer(history, context_turns)
+        turns = context_turns if context_turns is not None else self._policy.context_turns
+        trimmed = _trim_history_for_observer(history, turns, self._policy.roles_observed)
         if not trimmed:
             return ""
         if self._circuit_breaker.is_open():
@@ -263,7 +452,7 @@ class Observer:
         panes_read = self._panes_in_the_prompt()
         try:
             text, _tokens = await asyncio.wait_for(
-                self._run_stream(self._compose_messages(trimmed)),
+                self._run_stream(self._compose_messages(trimmed, job=_OBSERVATION_JOB)),
                 timeout=self._config.timeout_seconds,
             )
         except BudgetExhausted as exc:
@@ -345,19 +534,18 @@ class Observer:
             if added == 0:
                 return EMPTY_READING
 
-            start = max(0, len(transcript.chat_turns) - DEFAULT_CONTEXT_TURNS)
+            start = max(0, len(transcript.chat_turns) - self._policy.context_turns)
             window = list(transcript.chat_turns)[start:]
 
             observation_id = next_observation_id()
             messages = self._compose_messages(
                 window,
-                section=_SUGGESTION_PROMPT,
+                job=_READING_JOB,
                 extra_placeholders={
-                    "{schema}": READING_SCHEMA_FOR_PROMPT,
+                    "{schema}": self._agent_def.get_section(_READING_SCHEMA_SECTION),
                     "{observation_id}": observation_id,
-                    "{room_left}": _describe_room(room),
+                    "{room_left}": _describe_room(room, self._policy),
                 },
-                user_nudge="Emit your one JSON object now, or NONE.",
             )
             try:
                 # Hard ceiling around the whole stream: a provider that
@@ -394,7 +582,9 @@ class Observer:
                 return EMPTY_READING
 
             self._circuit_breaker.record_success()
-            reading = parse_reading(text, fallback_observation_id=observation_id)
+            reading = parse_reading(
+                text, fallback_observation_id=observation_id, silence=self._policy.silence,
+            )
             # Written on after the parse: what the model says about the room
             # is the one thing in its reply it was told rather than saw.
             reading = _with_room(reading, _room_percent(room))
@@ -406,9 +596,8 @@ class Observer:
     def _compose_messages(
         self,
         transcript_turns: list[dict[str, Any]],
-        section: str = _OBSERVATION_PROMPT,
+        job: str,
         extra_placeholders: dict[str, str] | None = None,
-        user_nudge: str = "Emit your one observation now, or NONE.",
     ) -> list[dict[str, Any]]:
         # One funnel for both `observe` and `observe_incremental`, which is
         # why the invocation is recorded here: it is the point where the card
@@ -418,14 +607,15 @@ class Observer:
 
         _record_invocation(self._agent_def.name or "observer", via="observer")
 
+        job_spec = self._policy.jobs[job]
         return [
             {
                 "role": "system",
                 "content": self._compose_system_prompt(
-                    transcript_turns, section, extra_placeholders or {}
+                    transcript_turns, job_spec.section, extra_placeholders or {}
                 ),
             },
-            {"role": "user", "content": user_nudge},
+            {"role": "user", "content": job_spec.cue},
         ]
 
     def _compose_system_prompt(
@@ -434,27 +624,35 @@ class Observer:
         section: str,
         extra_placeholders: dict[str, str],
     ) -> str:
-        template = self._agent_def.get_section(section)
-        if not template:
-            logger.warning(
-                "observer agent %r missing %r section; using empty system prompt",
-                self._agent_def.name, section,
-            )
-            return ""
+        # No missing-section fallback here: `ObserverPolicy.from_agent_def`
+        # already refused construction if the preamble or any job section was
+        # absent or empty, so by the time a call reaches this method both are
+        # guaranteed present. That is what closes the old defect (a missing
+        # section silently sending an EMPTY system prompt) rather than
+        # papering over it per call.
+        preamble_text = self._agent_def.get_section(self._policy.preamble)
+        job_text = self._agent_def.get_section(section)
+        template = f"{preamble_text}\n\n{job_text}"
 
+        policy = self._policy
         transcript_text = "\n".join(
-            f"{t['role']}: {t['content']}" for t in transcript_turns
-        ) or "(empty)"
-        pty_context_text = _render_pty_lines(self._pty.lines)
+            policy.transcript_line.format(role=t["role"], content=t["content"])
+            for t in transcript_turns
+        ) or policy.transcript_empty
+        pty_context_text = _render_pty_lines(self._pty.lines, policy)
+        banlist_text = ", ".join(f'"{p}"' for p in policy.banlist)
 
-        filled = (
-            template
-            .replace("{transcript}", transcript_text)
-            .replace("{pty_context}", pty_context_text)
-        )
-        for placeholder, value in extra_placeholders.items():
-            filled = filled.replace(placeholder, value)
-        return filled
+        # One pass over the card's own text. Chained replaces would run each
+        # later placeholder over the conversation already spliced in, so a
+        # turn that quoted `{schema}` would reach the model rewritten.
+        values = {
+            "{transcript}": transcript_text,
+            "{pty_context}": pty_context_text,
+            "{banlist}": banlist_text,
+            **extra_placeholders,
+        }
+        pattern = re.compile("|".join(re.escape(key) for key in values))
+        return pattern.sub(lambda match: values[match.group(0)], template)
 
     async def _run_stream(
         self, messages: list[dict[str, Any]]
@@ -517,9 +715,9 @@ class Observer:
                 logger.exception("observer cost record failed")
 
         text = joined.strip()
-        if not text or text.upper().rstrip(".!") == "NONE":
+        if not text or text.upper().rstrip(".!") == self._policy.silence.strip().upper():
             return "", output_tokens
-        if _is_banned_observation(text):
+        if _is_banned_observation(text, self._policy.banlist):
             logger.info("observer banlist hit — dropping %r", text[:80])
             return "", output_tokens
         return text, output_tokens
@@ -544,7 +742,7 @@ def _room_percent(room: Fullness | None) -> int | None:
     return round(room.ratio * 100)
 
 
-def _describe_room(room: Fullness | None) -> str:
+def _describe_room(room: Fullness | None, policy: ObserverPolicy) -> str:
     """How full the conversation was, for the observer's prompt.
 
     The observer is asked whether a boundary looks due and used to be told
@@ -552,18 +750,16 @@ def _describe_room(room: Fullness | None) -> str:
     blind. It gets the same reading the agent gets, from the same publisher,
     so the two can never disagree about the number.
 
-    One turn behind, and said so. `context_signal` explains why it cannot be
-    fresher: every route to the figure assembles the payload, which assembles
-    the prompt. A number presented as current when it is not is worse than a
-    number labelled as what it is.
+    One turn behind, and said so — `policy.room_measured` names it. The card
+    owns the wording; this function only owns which of the card's two
+    sentences applies and which figures fill it.
     """
     if room is None or room.trigger_tokens <= 0:
-        return "not measured yet for this conversation."
-    return (
-        f"about {_room_percent(room)}% used as of the end of the last "
-        f"turn ({room.conversation_tokens} of {room.trigger_tokens} tokens before "
-        f"the runtime consolidates on its own). This turn's own words are not "
-        f"in that figure yet."
+        return policy.room_unmeasured
+    return policy.room_measured.format(
+        percent=_room_percent(room),
+        conversation_tokens=room.conversation_tokens,
+        trigger_tokens=room.trigger_tokens,
     )
 
 
@@ -592,12 +788,13 @@ def build_observer_from_config(
 def _trim_history_for_observer(
     history: list[dict[str, Any]],
     context_turns: int,
+    roles_observed: tuple[str, ...],
 ) -> list[dict[str, Any]]:
-    """Keep only user + assistant text turns, tail-trimmed to context_turns."""
+    """Keep only text turns from `roles_observed`, tail-trimmed to context_turns."""
     plain: list[dict[str, Any]] = []
     for msg in history:
         role = msg.get("role")
-        if role not in ("user", "assistant"):
+        if role not in roles_observed:
             continue
         content = msg.get("content")
         if not isinstance(content, str) or not content.strip():
@@ -707,11 +904,14 @@ def _purge_pane_from_log(pane_id: str) -> int:
     return removed
 
 
-def _render_pty_lines(lines) -> str:
+def _render_pty_lines(lines, policy: ObserverPolicy) -> str:
     if not lines:
-        return "(none)"
+        return policy.pty_empty
     return "\n".join(
-        f"- [{line.get('timestamp', '?')}] {line.get('pane_id', '?')}: "
-        f"{(line.get('text') or '').rstrip()}"
+        policy.pty_line.format(
+            timestamp=line.get("timestamp", "?"),
+            pane_id=line.get("pane_id", "?"),
+            text=(line.get("text") or "").rstrip(),
+        )
         for line in lines
     )

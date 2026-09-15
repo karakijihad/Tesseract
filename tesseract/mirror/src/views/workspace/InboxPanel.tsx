@@ -7,6 +7,10 @@ import {
   type EventKind,
   type WorkspaceEvent,
 } from '../../stores/workspace';
+import {
+  ANSWERABLE_WITH,
+  isActionable as kindIsActionable,
+} from '../../stores/workspaceKinds.generated';
 import { CommentThread } from './CommentThread';
 import { EventDetailBody } from './EventDetailBody';
 import { NewThreadButton } from './NewThreadButton';
@@ -25,7 +29,7 @@ export const KIND_LABEL: Record<EventKind, string> = {
   agent_approval: 'Approval',
   skill_approval: 'Skill',
   skill_refinement: 'Skill fix',
-  skill_retirement: 'Playbook retired',
+  skill_retirement: 'Skill retirement',
   working_set_proposal: 'What it carries',
   tuning_proposal: 'What it spends',
   soul_proposal: 'Soul',
@@ -46,35 +50,55 @@ export const KIND_LABEL: Record<EventKind, string> = {
   strategist_summary: 'The week',
 };
 
-// Kinds where Approve/Reject map to a real backend effect — the operator's
-// decision changes system state. Other kinds are informational (the action
-// already happened or there's nothing to gate); they render Resolve only.
-const ACTIONABLE_KINDS = new Set<EventKind>([
-  'change_proposal',
-  'working_set_proposal',
-  'tuning_proposal',
-  'feedback_proposal',
-  'feedback_sweep',
-  'soul_proposal',
-  'agent_approval',
-  'skill_approval',
-  'skill_refinement',
-  // Files land in the vault on approve; the route has carried a commit
-  // handler for this since it was written, and the frontend never knew the
-  // kind, so the card drew no label and its only control was refused.
-  'vault_raw_ingest_batch',
-  'mission_reflection_proposal',
-  'yaml_change_proposal',
-  // Dormant today, nothing files one, and it carries the same gap the
-  // two above had: decidable on the backend and drawn with Resolve,
-  // which the route refuses. Listed so it is not a stuck card the day
-  // the merge path starts filing them again.
-  'kb_merge_conflict',
-  // Approving one changes no file and creates nothing. It changes the card's
-  // own state, which is what the next morning reads to know an idea is worth
-  // starting, so Approve and Decline are the real decision and not a Resolve.
-  'project_proposal',
-]);
+/** What Approve/Reject say and why, for the kinds whose label is not already
+ *  plain English. A control whose label names the gesture rather than the
+ *  consequence carries a `Hint` saying what it does; `skill_retirement` and
+ *  `skill_refinement` are exactly that kind,
+ *  because "Approve" alone does not say whether the skill goes away or the
+ *  fix lands. `undefined` hints render the button bare (`Hint` with no
+ *  `label` skips the popover), which is right for the kinds whose label
+ *  already reads as its own consequence. */
+export interface DecisionCopy {
+  approveLabel: string;
+  approveHint?: string;
+  rejectLabel: string;
+  rejectHint?: string;
+}
+
+export function decisionCopy(kind: EventKind, payload: Record<string, unknown>): DecisionCopy {
+  switch (kind) {
+    case 'agent_approval':
+      return {
+        approveLabel: 'Promote',
+        approveHint: 'Move the agent from pending/ into the active set',
+        rejectLabel: 'Reject',
+      };
+    case 'skill_approval':
+      return { approveLabel: 'Promote', rejectLabel: 'Reject' };
+    case 'skill_retirement':
+      return {
+        approveLabel: 'Retire it',
+        approveHint:
+          'Retires the skill. The assistant stops using it, and the file stays on disk.',
+        rejectLabel: 'Keep it',
+        rejectHint: 'Leaves the skill live, unchanged.',
+      };
+    case 'skill_refinement': {
+      const origin = typeof payload.origin === 'string' ? payload.origin : '';
+      const isRevert = origin === 'revert';
+      return {
+        approveLabel: isRevert ? 'Restore that revision' : 'Apply the fix',
+        approveHint: isRevert
+          ? 'Makes the earlier revision live again. The one it replaces stays archived.'
+          : 'Replaces the skill with the proposed rewrite.',
+        rejectLabel: 'Discard it',
+        rejectHint: 'Leaves the skill as it is now. The proposal is dropped.',
+      };
+    }
+    default:
+      return { approveLabel: 'Approve', rejectLabel: 'Reject' };
+  }
+}
 
 const KIND_ORIGIN_LABEL: Record<string, string> = {
   provider_model_added: 'Model added',
@@ -152,7 +176,9 @@ function filterEvents(
       );
     case 'approvals':
       return events.filter((e) =>
-        ['agent_approval', 'skill_approval', 'skill_refinement'].includes(e.kind),
+        ['agent_approval', 'skill_approval', 'skill_refinement', 'skill_retirement'].includes(
+          e.kind,
+        ),
       );
     case 'nudges':
       return events.filter(
@@ -308,13 +334,13 @@ export function InboxPanel({
     // the set is computed once. Written twice, the two counts could never
     // differ and a later change to one would silently not reach the other.
     const decidable = selectedEvents.filter(
-      (e) => e.status === 'pending' && ACTIONABLE_KINDS.has(e.kind),
+      (e) => e.status === 'pending' && kindIsActionable(e.kind),
     );
     return {
       approve: decidable,
       reject: decidable,
       resolve: selectedEvents.filter(
-        (e) => e.status === 'pending' && !ACTIONABLE_KINDS.has(e.kind),
+        (e) => e.status === 'pending' && !kindIsActionable(e.kind),
       ),
       delete: selectedEvents.filter((e) => e.status !== 'deleted'),
     };
@@ -530,9 +556,11 @@ export function InboxPanel({
             // Approve/Reject only fires for kinds where the operator's
             // decision changes system state (change_proposal applies the
             // file write, etc). Informational kinds — operator_post,
-            // agent_post, nudge, session reflection — get a single Resolve
-            // verb that flips status without re-running an approval gate.
-            const isActionable = ACTIONABLE_KINDS.has(ev.kind);
+            // agent_post, session reflection — get a single Resolve verb
+            // that flips status without re-running an approval gate. Read
+            // off the generated declaration rather than a hand-kept set, so
+            // a kind absent from it cannot draw a control the route refuses.
+            const isActionable = kindIsActionable(ev.kind);
             // CR-5 — agent_post events whose payload carries a `channel` were
             // sourced by the channel gate. These are RECORDS: the operator
             // already answered on the channel the request came through, which
@@ -648,6 +676,7 @@ export function InboxPanel({
                   })()}
                   {ev.kind === 'skill_refinement' && (() => {
                     const p = ev.payload as {
+                      origin?: string;
                       stats?: {
                         loads?: number;
                         corrections?: number;
@@ -655,8 +684,13 @@ export function InboxPanel({
                       };
                     };
                     const s = p.stats;
+                    const originLabel =
+                      p.origin === 'revert' ? 'Restore' : p.origin === 'revise' ? 'Fix' : null;
                     return (
                       <div className="workspace-event-agent-meta">
+                        {originLabel && (
+                          <span className="workspace-event-chip">{originLabel}</span>
+                        )}
                         {s && s.loads !== undefined && (
                           <span className="workspace-event-chip">
                             {s.corrections}/{s.loads} corrected
@@ -670,63 +704,83 @@ export function InboxPanel({
                       </div>
                     );
                   })()}
+                  {ev.kind === 'skill_retirement' && (() => {
+                    const p = ev.payload as {
+                      name?: string;
+                      live_version?: string | number;
+                    };
+                    return (
+                      <div className="workspace-event-agent-meta">
+                        {p.name && (
+                          <span className="workspace-event-chip">{p.name}</span>
+                        )}
+                        {p.live_version !== undefined && p.live_version !== null && (
+                          <span className="t-meta">v{p.live_version}</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </Disclosure>
                 <div className="workspace-event-actions">
                   {ev.status === 'pending' && (
-                    isActionable ? (
-                      <>
-                        <Hint label={ev.kind === 'agent_approval'
-                            ? 'Move the agent from pending/ into the active set'
-                            : undefined}>
-                          <Button
-                            tone="good"
-                            onClick={() => onDecide(ev.event_id, 'approve')}
-                            disabled={busyId === ev.event_id}
-                          >
-                            {ev.kind === 'agent_approval' || ev.kind === 'skill_approval'
-                              ? 'Promote'
-                              : ev.kind === 'skill_refinement'
-                              ? 'Apply'
-                              : 'Approve'}
-                          </Button>
-                        </Hint>
-                        <Button
-                          tone="danger"
-                          onClick={() => {
-                            if (ev.kind === 'agent_approval' || ev.kind === 'skill_approval' || ev.kind === 'skill_refinement') {
-                              // Same minimal surface as the channel gate:
-                              // one prompt, optional text. The reason is
-                              // archived beside the rejected agent and
-                              // delivered to the agent on its next turn.
-                              const r = window.prompt(
-                                `Reason for rejection (optional, ${entityName} sees it):`,
-                                '',
-                              );
-                              if (r === null) return; // cancelled
-                              onDecide(ev.event_id, 'reject', r.trim() || undefined);
-                              return;
-                            }
-                            onDecide(ev.event_id, 'reject');
-                          }}
-                          disabled={busyId === ev.event_id}
-                        >
-                          Reject
-                        </Button>
-                      </>
-                    ) : gatePayload ? (
+                    isActionable ? (() => {
+                      const copy = decisionCopy(ev.kind, ev.payload);
+                      const promptsForReason =
+                        ev.kind === 'agent_approval' ||
+                        ev.kind === 'skill_approval' ||
+                        ev.kind === 'skill_refinement' ||
+                        ev.kind === 'skill_retirement';
+                      return (
+                        <>
+                          <Hint label={copy.approveHint}>
+                            <Button
+                              tone="good"
+                              onClick={() => onDecide(ev.event_id, 'approve')}
+                              disabled={busyId === ev.event_id}
+                            >
+                              {copy.approveLabel}
+                            </Button>
+                          </Hint>
+                          <Hint label={copy.rejectHint}>
+                            <Button
+                              tone="danger"
+                              onClick={() => {
+                                if (promptsForReason) {
+                                  // Same minimal surface as the channel gate:
+                                  // one prompt, optional text. The reason is
+                                  // archived beside the rejected row and
+                                  // delivered to the agent on its next turn.
+                                  const r = window.prompt(
+                                    `Reason for rejection (optional, ${entityName} sees it):`,
+                                    '',
+                                  );
+                                  if (r === null) return; // cancelled
+                                  onDecide(ev.event_id, 'reject', r.trim() || undefined);
+                                  return;
+                                }
+                                onDecide(ev.event_id, 'reject');
+                              }}
+                              disabled={busyId === ev.event_id}
+                            >
+                              {copy.rejectLabel}
+                            </Button>
+                          </Hint>
+                        </>
+                      );
+                    })() : gatePayload ? (
                       <span className="t-meta">
                         {gatePayload.decision === 'approved' ? 'Approved' : 'Refused'}
                         {' on '}
                         {gatePayload.channel}
                       </span>
-                    ) : (
+                    ) : (ANSWERABLE_WITH[ev.kind] ?? []).includes('resolve') ? (
                       <Button
                         onClick={() => onDecide(ev.event_id, 'resolve')}
                         disabled={busyId === ev.event_id}
                       >
                         Resolve
                       </Button>
-                    )
+                    ) : null
                   )}
                   {ev.status !== 'deleted' && (
                     <Button

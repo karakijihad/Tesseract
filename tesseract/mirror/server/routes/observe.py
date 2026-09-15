@@ -9,7 +9,7 @@ from tesseract.mirror.server.envelope import make_envelope
 
 log = logging.getLogger(__name__)
 
-_VALID_MODES = {"meta", "maintenance"}
+_VALID_MODES = {"meta"}
 
 
 async def observe(request: web.Request) -> web.Response:

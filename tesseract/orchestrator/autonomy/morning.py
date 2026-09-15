@@ -48,13 +48,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from tesseract.orchestrator.projects.models import Project
+from tesseract.permissions.decide import NO_APPROVER_REASON
 
 log = logging.getLogger(__name__)
+
+#: The `deny_reason` `permissions/decide.py::evaluate` writes when a tool
+#: asked for the operator's approval and no `ask_fn` was wired: a write
+#: refused for want of an approver, as against every other way a call can
+#: fail.
+_NO_APPROVER = NO_APPROVER_REASON
+
+#: The stop rule's `kind` for this condition. Not a row in
+#: `healing/remedies.py`: there is no remedy to run, the same reason a
+#: governor pause carries no remedy row, only a decision the operator makes.
+_BOUNDARY_KIND = "autonomy_write_refused"
 
 #: What a morning conversation is called on disk, and the reason there is one
 #: per day rather than one per wake. The phase's item 4 works a step per wake
@@ -200,9 +212,10 @@ def open_morning_session(
     not arise: `free` resolves a posture to auto before an ask is reached, so
     nothing the morning does stops here. On a shipped `max` install it does
     arise, and the morning's writes are refused rather than acted on, which is
-    the safe end. Making that refusal reach a phone instead is item 7's, on
-    AR-28 item 8's advice card, and passing a denier here would look like an
-    answer to it while being the same refusal with a callback in front.
+    the safe end. Passing a denier here would look like an answer to that
+    while being the same refusal with a callback in front; the actual answer
+    is `send_one_turn` reading the refusal off the turn and filing an advice
+    card so the phone is told instead of nobody.
 
     Raises `ChatInfraNotReady` if the backend is still booting, like every
     other caller of the factory.
@@ -258,6 +271,96 @@ def open_morning_session(
 _REASON_CHARS = 240
 
 
+def _boundary_card_since(day: date) -> datetime:
+    """The `since` a day's repeated wakes share, so one boundary mints one card.
+
+    `stop_rule.card_id` hashes `since` into the item's id (truncated to the
+    minute through `mint_agenda_id`), the same way `governor.
+    _ask_if_it_keeps_coming_back` pins `since` to the pause chain's start
+    rather than the tick that happens to be filing. There is no chain to read
+    here, so the day itself is the anchor: every wake between the morning and
+    the day's last hourly step reads the SAME `since` and therefore mints the
+    SAME id, which is what makes a second wake hitting the same tool update
+    the standing card instead of opening a second one. A boundary still
+    standing tomorrow gets tomorrow's card, on the same reasoning the day's
+    budget and its ledger both reset at midnight rather than carrying a debt
+    forward silently.
+    """
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+
+
+def _file_boundary_card(raw: dict[str, Any], *, origin: str, since: datetime) -> None:
+    """The operator's advice card for a write the day could not ask about.
+
+    Reached from `send_one_turn`'s own loop, on a `TOOL_RESULT` chunk whose
+    `deny_reason` is exactly `_NO_APPROVER`: an ASK-postured tool with nobody
+    to ask, which is the one refusal that otherwise tells the operator
+    nothing. Every other refusal a tool can return, a policy DENY, a
+    bash-security block, a path-validator refusal, is an ordinary tool error
+    the turn already reports in its own words and mints no card here.
+
+    Invariants held at once, because this runs inside a wake that must
+    degrade rather than stop:
+
+    - **One card per boundary per subject, deduped across repeated wakes.**
+      `subject` is the tool's name, `since` is pinned to the calendar day
+      (`_boundary_card_since`) rather than this call's own clock, so the
+      morning's wake and every workday wake that hits the same tool on the
+      same day resolve to one `card_id` and `stop_rule.file_card` updates the
+      standing item instead of opening a second one.
+    - **No card for a refusal that is not this boundary.** The exact-string
+      compare at the call site is what keeps a `free`-mode bash-security
+      refusal, or any DENY the policy already decided, out of this path: on
+      `free` the six forced-ASK bash checks write a different `deny_reason`
+      and every ordinary tool resolves AUTO before an ask is ever reached
+      (`permissions.yaml` is the authority), so `_NO_APPROVER` is not written
+      for them.
+    - **The turn still degrades as today.** This is a side effect read off a
+      chunk the loop already receives; it neither stops the turn nor changes
+      what `send_one_turn` returns, so a boundary costs a card and nothing
+      else, exactly as `open_morning_session`'s own docstring already says
+      the refusal is the safe end.
+    - **Same funnel.** `stop_rule.file_card` mints the identical `AgendaItem`
+      shape the recovery pass and the governor file, so the card is an
+      ordinary advice card: answerable from the phone, on the panel that
+      already reads that shape.
+    - **No posture decided here.** This reads `deny_reason`, which is
+      `decide.py`'s own record of a decision `permissions.yaml` already made;
+      nothing here asks, grants, or overrides a posture.
+
+    Never raises: a card that could not be filed costs a card, not the wake,
+    the same contract `stop_rule.file_card` and `governor.
+    _ask_if_it_keeps_coming_back` both hold for the same reason.
+    """
+    if raw.get("deny_reason") != _NO_APPROVER:
+        # The one gate, held here rather than at the call site, so a caller
+        # cannot accidentally widen it by skipping the compare. Every OTHER
+        # `denied_hard` refusal is an ordinary tool error the turn already
+        # reports in its own words.
+        return
+    tool_name = str(raw.get("tool_name") or "")
+    if not tool_name:
+        return
+    try:
+        from tesseract.orchestrator.healing import stop_rule
+
+        stop = stop_rule.advice_owed(
+            kind=_BOUNDARY_KIND,
+            subject=tool_name,
+            said=(
+                f"the {origin} tried to use {tool_name} and nobody was there "
+                f"to approve it. This machine asks before that tool runs, and "
+                f"an unattended turn has no one to ask, so the step stopped "
+                f"there rather than running it. What would fix this is "
+                f"deciding whether {tool_name} may run unattended at all, or "
+                f"staying at the desk for the steps that need it"
+            ),
+        )
+        stop_rule.file_card(stop, since=since, now=datetime.now(timezone.utc))
+    except Exception:  # noqa: BLE001 - see the docstring
+        log.exception("morning: could not file the boundary card for %s", tool_name)
+
+
 async def send_one_turn(
     app: Any, prompt: str, *, origin: str, counting: str
 ) -> tuple[str, int]:
@@ -287,10 +390,19 @@ async def send_one_turn(
     rows have no websocket to close and flush behind them. Threaded, because
     its own docstring says it is called from a worker thread by that pump and
     it was measured past the 50ms the loop may block for.
+
+    **A write refused for want of an approver files the operator's card.**
+    `open_morning_session`'s own docstring names the shape: on a shipped
+    `max` install there is no `ask_fn`, so an ASK-postured tool is refused
+    rather than acted on. That refusal used to reach nobody. `_file_boundary_card`
+    is the seam, reached here because this is the one place both rows of the
+    day read every `TOOL_RESULT` chunk; see its docstring for the invariants.
     """
     from tesseract.brain.chat import ChunkType
+    from tesseract.lib.clock import today
     from tesseract.mirror.server.session_autosave import save_now
 
+    since = _boundary_card_since(today())
     session = open_morning_session(app, row=origin)
     text: list[str] = []
     counted = 0
@@ -302,6 +414,13 @@ async def send_one_turn(
                 call = chunk.tool_call
                 if call is not None and call.name == counting:
                     counted += 1
+            elif chunk.type == ChunkType.TOOL_RESULT and chunk.raw.get("denied_hard"):
+                # `_file_boundary_card` is the one place that decides whether
+                # THIS denial is the no-approver boundary; every other
+                # `denied_hard` refusal reaches it and is turned away there.
+                await asyncio.to_thread(
+                    _file_boundary_card, chunk.raw, origin=origin, since=since
+                )
     finally:
         # In a `finally`, because a turn that fell over mid-stream was billed
         # for what it managed and `ChatSession` has already appended it.

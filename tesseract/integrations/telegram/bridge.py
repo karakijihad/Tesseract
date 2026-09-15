@@ -757,6 +757,13 @@ class TelegramBridge:
         if await self._handle_agenda_quick_reply(message, text_stripped):
             return
 
+        # A typed verdict on a task that already closed. Checked after the
+        # agenda quick-reply and before anything else, on the same reasoning:
+        # a casual message that happens to contain a colon stays
+        # conversational, because neither pattern matches free text.
+        if await self._handle_verdict_quick_reply(message, text_stripped):
+            return
+
         # m2 — deterministic command router. Read-only commands resolve
         # before the chat turn so the operator sees the same answer on
         # phone or cockpit, independent of chat_brain decisions.
@@ -1312,6 +1319,15 @@ class TelegramBridge:
         # `thinking…` for the length of an extra turn, with nothing bounding
         # the wait. The cockpit compacts after its stream has already reached
         # the UI; this is the same place in the same order.
+        #
+        # `reply is not None` is "this turn was not cancelled", not "this turn
+        # said something": `_start_channel_turn` answers `""` for a turn that
+        # ran clean and wrote nothing back (a `session_continue`-only step is
+        # exactly that shape) and reserves `None` for the one case that must
+        # never reach a boundary, a cancellation. Read the two apart there,
+        # not here — a cancelled turn is excluded by never returning anything
+        # but `None` for it, never by a second condition a future edit could
+        # loosen.
         if reply is not None and not turn_errors:
             await _boundary()
 
@@ -2662,6 +2678,15 @@ class TelegramBridge:
                 chat_id, message_id, cb_id, target=parts[1], letter=parts[2],
             )
             return
+        if len(parts) == 3 and parts[0] == "v":
+            # An answer to a task that has already closed. It resolves no
+            # future either: the task is done or failed, and the tap only
+            # scores it. Same table and the same write the typed reply
+            # reaches, for the reason the agenda one is.
+            await self._handle_verdict_callback(
+                chat_id, message_id, cb_id, target=parts[1], letter=parts[2],
+            )
+            return
         if len(parts) != 3 or parts[0] != "g":
             log.warning("telegram: callback data not a gate decision: %r", data)
             await self._safe_answer_callback(cb_id, "Unknown action.")
@@ -2878,6 +2903,7 @@ class TelegramBridge:
 
     async def _safe_strip_keyboard(
         self, chat_id: int, message_id: int, *, suffix: str = "",
+        closed_as: str = "approval prompt closed",
     ) -> None:
         """Remove the inline keyboard and optionally append a status line.
 
@@ -2885,6 +2911,10 @@ class TelegramBridge:
         documented way to drop the keyboard without re-rendering text.
         When we want to also tag the message ("✓ Approved"), do a
         text edit instead so the disposition is visible in the chat log.
+
+        `closed_as` names what kind of prompt this was, in the operator's own
+        words. A task's verdict is not an approval and must not read like
+        one, which is what the default answers everywhere else.
         """
         if self._api is None:
             return
@@ -2900,7 +2930,7 @@ class TelegramBridge:
             await self._api.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"(approval prompt closed){suffix}",
+                text=f"({closed_as}){suffix}",
                 # PLAIN. The italic wrapper this used to carry made the whole
                 # line Markdown, and the suffix names a tool: `workspace_decide`
                 # has an underscore in it, Telegram's legacy parser refused the
@@ -3423,6 +3453,35 @@ class TelegramBridge:
             verb, reply.agenda_id, result.get("reason") or result.get("verb"),
         )
 
+    async def _handle_verdict_callback(
+        self, chat_id: int, message_id: int | None, cb_id: str,
+        *, target: str, letter: str,
+    ) -> None:
+        """A tapped answer to the operator's verdict on a task that closed.
+
+        Same one-key answer the typed reply reaches, through the same
+        `record_verdict`, so a tap and a typed reply land as the same row.
+        The prompt is closed either way, whichever it was, so a second tap on
+        an already-answered message finds nothing.
+        """
+        from tesseract.integrations.telegram.agenda_quick_reply import VERDICT_LETTERS
+        from tesseract.orchestrator.autonomy.verdicts import record_verdict
+
+        verdict = VERDICT_LETTERS.get(letter)
+        if verdict is None:
+            log.warning("telegram: verdict callback letter %r is not one of ours", letter)
+            await self._safe_answer_callback(cb_id, "Unknown action.")
+            return
+        task_id = f"ag-{target}"
+        outcome = await asyncio.to_thread(record_verdict, task_id, verdict, by="telegram")
+        said = _verdict_said(outcome, verdict)
+        if message_id is not None:
+            await self._safe_strip_keyboard(
+                chat_id, int(message_id), suffix="\n\n" + said, closed_as="task closed",
+            )
+        await self._safe_answer_callback(cb_id, said)
+        log.info("telegram: verdict callback %s for %s -> %s", verdict, task_id, outcome)
+
     async def _handle_agenda_quick_reply(
         self, message: TelegramMessage, text_stripped: str,
     ) -> bool:
@@ -3466,6 +3525,35 @@ class TelegramBridge:
             return True
         body = format_reply_body(result)
         await self.send_text(chat_ref=str(message.chat_id), text=body)
+        return True
+
+    async def _handle_verdict_quick_reply(
+        self, message: TelegramMessage, text_stripped: str,
+    ) -> bool:
+        """``<task_id>: good|bad|unused`` records the operator's verdict.
+
+        The same one-key answer a tapped button gives, reached without the
+        message still on screen: `record_verdict` is the one write either way
+        reaches, so a tap and a typed reply land as the same row.
+        """
+        from tesseract.integrations.telegram.agenda_quick_reply import (
+            looks_like_verdict_reply,
+            parse_verdict_reply,
+        )
+        from tesseract.orchestrator.autonomy.verdicts import record_verdict
+
+        if not looks_like_verdict_reply(text_stripped):
+            return False
+        reply = parse_verdict_reply(text_stripped)
+        if reply is None:
+            return False
+        outcome = await asyncio.to_thread(
+            record_verdict, reply.task_id, reply.verdict, by="telegram"
+        )
+        await self.send_text(
+            chat_ref=str(message.chat_id),
+            text=_verdict_said(outcome, reply.verdict),
+        )
         return True
 
     async def clear_session(self, chat_id: int) -> None:
@@ -3627,6 +3715,12 @@ class TelegramBridge:
         # persisted history an inbound message would. Left out of this hook, a
         # chat receiving many background completions grew past the window with
         # nothing bounding it.
+        #
+        # Same gate as the inbound path, and for the same reason: a turn this
+        # bridge started on its own (a spawn waking the chat) can end in
+        # nothing but a `session_continue` too, so `reply is not None` reads
+        # "not cancelled", never "said something" — see the inbound gate's own
+        # comment for why that is the whole answer.
         if reply is not None and not error_out:
             await _boundary()
         return error_out[0] if error_out else None
@@ -4393,15 +4487,27 @@ class TelegramBridge:
         Returns the first chunk's message id, as `send_text` does, since
         keeping that signature is the whole point of this one.
         """
-        from tesseract.integrations.telegram.agenda_quick_reply import letter_for
+        from tesseract.integrations.telegram.agenda_quick_reply import (
+            letter_for,
+            verdict_letter_for,
+        )
 
         rows = []
         for action in actions or ():
-            letter = letter_for(getattr(action, "verb", ""))
+            verb = getattr(action, "verb", "")
             target = str(getattr(action, "target", ""))
+            # Two closed tables, two prefixes: an agenda decision and a
+            # task's verdict are answered by different dispatch paths in
+            # `_handle_callback_query`, so which table found the letter is
+            # what the button's prefix has to say.
+            letter = letter_for(verb)
+            prefix = "q"
+            if not letter:
+                letter = verdict_letter_for(verb)
+                prefix = "v"
             if not letter or not target:
                 continue
-            data = f"q:{target.removeprefix('ag-')}:{letter}"
+            data = f"{prefix}:{target.removeprefix('ag-')}:{letter}"
             if len(data.encode("utf-8")) > CALLBACK_DATA_MAX_BYTES:
                 log.warning(
                     "telegram: %s does not fit a button, so the message "
@@ -4727,6 +4833,32 @@ _CLEAR_TAPPED: dict[str, str] = {
     "clear": "Clearing.",
 }
 _CLEAR_PENDING_TTL_S = 300.0
+
+#: What each of the three verdicts is called back to the operator, in the
+#: word they used. `record_verdict`'s own vocabulary ("good"/"bad"/"unused")
+#: is the runtime's, not theirs, and "not used" is the one that needs saying
+#: differently.
+_VERDICT_LABELS: dict[str, str] = {"good": "good", "bad": "bad", "unused": "not used"}
+
+
+def _verdict_said(outcome: str, verdict: str) -> str:
+    """What the operator is told after a verdict tap or typed reply.
+
+    Reached from both the callback and the typed-reply handler, so the two
+    ways of answering read the same. Plain sentences: this is copy a person
+    reads, not a log line.
+    """
+    if outcome == "recorded":
+        return f"Marked {_VERDICT_LABELS.get(verdict, verdict)}."
+    if outcome == "unknown_task":
+        return "There is no closed task with that id."
+    if outcome == "not_a_task":
+        return "That one is not a task, so there is nothing to mark."
+    if outcome == "never_finished":
+        return "That task stopped before it finished, so there is no work to mark."
+    if outcome == "unwritable":
+        return "That could not be saved. Try again."
+    return "That was not one of the three keys."
 
 
 def _pending_clear_expired(stamp_iso: str) -> bool:

@@ -153,6 +153,48 @@ def compose(category: str, context: dict[str, Any]) -> Message:
             ),
         )
 
+    if category == "task_closed":
+        # Not an approval, and it must not read like one: the work already
+        # happened, this only asks how it went. Three real answers exist
+        # here, unlike the two above, so three buttons is not a guess.
+        item = _item_id(context)
+        goal = _text(context, "goal")
+        finished = (
+            "It finished." if _text(context, "outcome") == "done"
+            else "It could not be finished."
+        )
+        # A check decides either way, so the sentence follows the outcome too:
+        # a failed step closes the task as failed with the check as its judge.
+        if _text(context, "verified_by") != "gate":
+            checked = "It closed on the assistant's word."
+        elif _text(context, "outcome") == "done":
+            checked = "Your own checks passed it."
+        else:
+            checked = "Your own checks did not pass it."
+        facts = _maybe(("Task", item))
+        if item:
+            facts += (
+                ("Reply", f"{item}: good, {item}: bad or {item}: unused"),
+            )
+        return Message(
+            title="Task closed",
+            body=_lines(
+                goal,
+                f"{finished} {checked}",
+                "Was the work good, bad or not used?",
+            ),
+            facts=facts,
+            actions=(
+                (
+                    Action(label="Good", verb="good", target=item),
+                    Action(label="Bad", verb="bad", target=item),
+                    Action(label="Not used", verb="unused", target=item),
+                )
+                if item
+                else ()
+            ),
+        )
+
     if category == "recovery_summary":
         # The count of conversations is named separately from the count of
         # things needing attention, because it is the one thing here the

@@ -1014,3 +1014,17 @@
   stroke: var(--accent);
   stroke-width: var(--stroke-2);
 }
+
+/* ── the day, finished today ──────────────────────────────────────
+   Each row's own line stays on the left; its keys sit on the right rather
+   than under it, so a page of these still reads as a column of sentences
+   with a column of buttons beside it, not each row wrapping to its own
+   shape. Wraps to stacked on a phone width, same as `RowActions` already
+   does for its own contents. */
+.day-room__step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}

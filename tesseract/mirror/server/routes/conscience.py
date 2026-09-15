@@ -504,12 +504,16 @@ async def payload(request: web.Request) -> web.Response:
     provider = (lambda: registry) if registry is not None else None
 
     names = _surfaces()
+    # The model a turn would ride, read once: every surface runs the same model,
+    # so the fold, the panel and a channel price its schemas the same way.
+    divisor = await asyncio.to_thread(request_size.chat_brain_schema_divisor)
     composed = await asyncio.gather(
         *(
             asyncio.to_thread(
                 prompt_payload.payload_breakdown,
                 channel_name=None if name == "cockpit" else name,
                 tool_registry_provider=provider,
+                schema_chars_per_token=divisor,
             )
             for name in names
         ),

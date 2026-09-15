@@ -98,9 +98,15 @@ export function PayloadBreakdown({
       <figcaption className="payload__caption t-meta">
         Everything listed is sent, every turn. Nothing is dropped or trimmed to
         fit. This is the constant cost before your first message, so it is the
-        part that caches; the conversation is charged on top of it. Token counts
-        are an estimate at four characters each, the same one the runtime
-        compacts by, because no exact count exists until the model answers.
+        part that caches; the conversation is charged on top of it. The
+        instructions and memory sections are an estimate by characters, the
+        same divide the runtime compacts by. The tool schemas are priced a
+        different way, by what the namespace mechanism actually puts on the
+        wire rather than by their character count, because a character count
+        reads that array several times too high. This is what the next turn
+        would send; a conversation already running keeps the head it started
+        with, so its own reading may be older than this one without being a
+        different size.
       </figcaption>
     </figure>
   );

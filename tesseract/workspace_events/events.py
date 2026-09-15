@@ -59,45 +59,86 @@ EventKind = Literal[
     "strategist_summary",        # Weekly initiative curator one-shot summary of all emitted Initiative items
     "runtime_lock_deny",         # SU-1/SU-5 — file_write or bash attempted to mutate a locked runtime path or config yaml; operator-visible audit surface
     "skill_approval",            # skill_create drafted a skill into quarantine; approve promotes, reject archives (mirror agent_approval)
-    "skill_refinement",          # refinement job flags an underperforming skill + proposes a revised body; approve applies the diff to the live SKILL.md
-    "skill_retirement",          # a playbook revision measured worse than the one before it and was retired; the retiring already happened, so Resolve only
+    "skill_refinement",          # skill_refine (revise or revert) proposes a body for the live SKILL.md; approve applies the diff, checked against the base it was written from
+    "skill_retirement",          # skill_refine asks whether a skill should stop being used; approve retires it, reject leaves it active. Only the operator's answer decides, in every mode
     "working_set_proposal",      # working_set_review proposes which tools and playbooks the turn carries; approve moves the names through each file's own generator
     "tuning_proposal",           # runtime_tuning proposes a change to what the runtime spends or how often it runs; approve moves the seam the card names
     "project_proposal",          # project_propose puts up an idea no existing project covers; approving means it is worth starting, and creates nothing
 ]
 
 
+#: What a card of this kind may be answered with: `"approve"`/`"reject"` for a
+#: decision, `"resolve"` for a report that just needs dismissing, both where a
+#: kind is deliberately both (`clarification` and `nudge` — the operator's real
+#: answer is a comment, but the card still counts as waiting on them, and a
+#: plain approve/reject settles it too), and an empty tuple for a kind kept
+#: only so old events still deserialize (`mission_reflection_proposal` — the
+#: mission engine is deleted; no card of this kind can be filed again).
+#:
+#: Declared once, here, beside `EventKind`, rather than in whichever surface
+#: asked first: `DECIDABLE_KINDS` below, the route's resolvable set, and the
+#: frontend's own copy used to be three hand-kept lists, and being absent from
+#: one was silent. Three cards shipped stuck that way (`skill_retirement`,
+#: `vault_raw_ingest_batch`, `kb_merge_conflict`) before all three were added
+#: to every list by hand — the same shape that leaves the next kind stuck.
+#: Every `EventKind` MUST have an entry here; a test fails when one is missing.
+#:
+#: **This is what verbs the runtime accepts, not which the Inbox row draws.**
+#: `clarification` and `nudge` both carry `resolve`, and the generated
+#: frontend helper (`mirror/src/stores/workspaceKinds.generated.ts::
+#: isActionable`) makes `resolve` win: the row draws Resolve, not
+#: Approve/Reject, whenever a kind carries both, because the operator's real
+#: answer for those two is a comment.
+ANSWERABLE_WITH: dict[str, tuple[str, ...]] = {
+    "feedback_proposal": ("approve", "reject"),
+    # It is pinned `ask` in `permissions.yaml` so being listed here does not
+    # make it auto under `free`. approve performs the
+    # `memory_save` the card proposes.
+    "feedback_sweep": ("approve", "reject"),
+    "agent_approval": ("approve", "reject"),
+    "soul_proposal": ("approve", "reject"),
+    "change_proposal": ("approve", "reject"),
+    # Historical records only — the mission engine is deleted, and this kind
+    # is kept so old workspace events still deserialize. No card of this kind
+    # can arrive in an inbox again, so it needs no verb.
+    "mission_reflection_proposal": (),
+    "reflection_proposal": ("resolve",),
+    "nudge": ("approve", "reject", "resolve"),
+    "agent_post": ("resolve",),
+    "operator_post": ("resolve",),
+    "daily_brief": ("resolve",),
+    "yaml_change_proposal": ("approve", "reject"),
+    "kb_merge_conflict": ("approve", "reject"),
+    "recovery_summary": ("resolve",),
+    "vault_raw_ingest_batch": ("approve", "reject"),
+    "clarification": ("approve", "reject", "resolve"),
+    "strategist_summary": ("resolve",),
+    "runtime_lock_deny": ("resolve",),
+    "skill_approval": ("approve", "reject"),
+    "skill_refinement": ("approve", "reject"),
+    "skill_retirement": ("approve", "reject"),
+    "working_set_proposal": ("approve", "reject"),
+    "tuning_proposal": ("approve", "reject"),
+    "project_proposal": ("approve", "reject"),
+}
+
 #: The kinds that carry a decision the operator has to make: every one of them
 #: is something `routes/workspace.py::apply_decision` accepts an approve or a
-#: reject for. Declared here beside `EventKind` rather than in whichever
-#: surface asked first, because two answers to "what is waiting on you" is how
-#: one surface starts under-reporting: `/queue` counted `agent_post`, the one
-#: inbox kind that asks for nothing, and every pending soul edit went missing
-#: from the only view a phone had.
-DECIDABLE_KINDS: tuple[str, ...] = (
-    "agent_approval",
-    # The inbox has always drawn Approve and Reject for a sweep and the route
-    # has always accepted them, and this list is what every OTHER surface
-    # reads: `/queue`, the return note's "Waiting on you", the notifier, and
-    # `workspace_decide`. Missing here, a pending sweep was a card the desk
-    # could answer and the phone could not see, which is the exact
-    # under-reporting this list's own note describes. It is pinned `ask` in
-    # `permissions.yaml` so being listed here does not make it auto under
-    # `free`.
-    "feedback_sweep",
-    "skill_approval",
-    "skill_refinement",
-    "working_set_proposal",
-    "tuning_proposal",
-    "change_proposal",
-    "soul_proposal",
-    "feedback_proposal",
-    "yaml_change_proposal",
-    "vault_raw_ingest_batch",
-    "kb_merge_conflict",
-    "clarification",
-    "project_proposal",
-    "nudge",
+#: reject for. Derived from `ANSWERABLE_WITH` rather than kept as its own list,
+#: because two answers to "what is waiting on you" is how one surface starts
+#: under-reporting: `/queue` counted `agent_post`, the one inbox kind that asks
+#: for nothing, and every pending soul edit went missing from the only view a
+#: phone had. Read by `/queue`, the return note's "Waiting on you", the
+#: notifier, and `workspace_decide`.
+DECIDABLE_KINDS: tuple[str, ...] = tuple(
+    kind for kind, verbs in ANSWERABLE_WITH.items() if "approve" in verbs
+)
+
+#: The kinds `routes/workspace.py::apply_decision` accepts a plain `resolve`
+#: for — informational threads with nothing left to gate. Derived the same way
+#: as `DECIDABLE_KINDS`.
+RESOLVABLE_KINDS: frozenset[str] = frozenset(
+    kind for kind, verbs in ANSWERABLE_WITH.items() if "resolve" in verbs
 )
 
 #: What an event's status says once it has been decided. Anything else is still

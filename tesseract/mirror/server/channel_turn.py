@@ -349,4 +349,10 @@ async def _start_channel_turn(
             reply = f"{reply}\n\n⚠ {suffix}"
         else:
             reply = f"⚠ {suffix}"
-    return reply or None
+    # Empty string, not `None`, when the turn produced no text but ran clean:
+    # `None` is cancellation's own answer (`turn_cancelled`, above), and a turn
+    # that stopped for `session_continue` with nothing else to say is not that.
+    # Coercing "" to `None` here made the two indistinguishable to every
+    # caller, which is exactly the ambiguity the docstring above already
+    # promises does not exist.
+    return reply

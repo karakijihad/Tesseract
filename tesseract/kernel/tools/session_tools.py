@@ -40,6 +40,7 @@ from tesseract.orchestrator.agent_controller.interactive.cli_backend import (
     CliSessionBackend,
 )
 from tesseract.orchestrator.agent_controller.interactive.types import TurnResult
+from tesseract.permissions.decide import NO_APPROVER_REASON
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +394,7 @@ class SessionOpenTool(CarriesCompaction, Tool):
                     ),
                     is_error=True,
                     denied_hard=True,
-                    deny_reason="ASK posture with no approval channel",
+                    deny_reason=NO_APPROVER_REASON,
                 )
             approved = await ask_fn(self, inp, context)
             if not approved:

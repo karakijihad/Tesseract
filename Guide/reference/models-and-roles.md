@@ -33,8 +33,6 @@ A role either names its own model or points at a shared **chain** — a list wri
 | `playbook_extract` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `provider_watch` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `scheduled_task` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
-| `skill_refinement` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
-| `skill_suggest` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `subagents_default` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 | `watchman` | `api.google.gemini_36_flash` | `api.openai.gpt56_luna` | `chain_1` |
 

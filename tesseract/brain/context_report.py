@@ -95,6 +95,22 @@ def gather(cs: Any) -> dict[str, Any]:
     # the turn state plus what was said, which is why the rendered label says
     # "everything else" rather than naming it.
     report["rest_tokens"] = max(report["tokens"] - report["system_tokens"], 0)
+    # The tools array rides every turn as a separate field, not inside the
+    # system message, so `system_tokens` alone was never the size of what goes
+    # out. The Conscience payload panel prices it in; a report that left it out
+    # was the reason its number and this one never agreed. `_tools_tokens` is
+    # the session's own cached figure (`brain/chat.py`), the same structural
+    # reader the panel calls through `request_size.measure_tools`, so this is
+    # not a second measurement, it is the first one asked for what it already
+    # knows. Guarded like everything past the spine: a session with no such
+    # method (a stand-in, a sub-agent double) reports zero rather than raising.
+    try:
+        getter = getattr(cs, "_tools_tokens", None)
+        report["tools_tokens"] = int(getter()) if callable(getter) else 0
+    except Exception:
+        logger.exception("context report: tools token count failed")
+        report["tools_tokens"] = 0
+    report["payload_tokens"] = report["system_tokens"] + report["tools_tokens"]
     try:
         report.update(_last_turn_cache(getattr(cs, "history", [])))
     except Exception:
@@ -200,8 +216,12 @@ def render(report: dict[str, Any]) -> str:
             " · no window is configured, so nothing here can say when it "
             "will be wrapped up"
         )
+    system_tokens = int(report.get("system_tokens") or 0)
+    tools_tokens = int(report.get("tools_tokens") or 0)
+    payload_tokens = int(report.get("payload_tokens") or (system_tokens + tools_tokens))
     lines.append(
-        f"manifest {_short(int(report.get('system_tokens') or 0))}"
+        f"payload {_short(payload_tokens)} (head {_short(system_tokens)}"
+        f" + tools {_short(tools_tokens)})"
         f" · everything else {_short(int(report.get('rest_tokens') or 0))}"
     )
 

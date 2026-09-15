@@ -109,21 +109,6 @@ jobs:
     max_retries: 0
     backoff_seconds: 0
   config: {}
-- name: skill_refinement
-  cadence: "24h"
-  handler: tesseract.scheduler.tasks.skill_refinement.SkillRefinementJob
-  enabled: true
-  on_failure: log
-  retry_policy:
-    max_retries: 0
-    backoff_seconds: 0
-  config:
-    window_days: 14
-    min_loads: 4
-    ratio_threshold: 0.34
-    max_cards: 3
-    max_evidence_rows: 8
-    max_correction_chars: 400
 - name: working_set_review
   when: tool_usage_volume
   when_config:
@@ -174,19 +159,6 @@ jobs:
   config:
     min_tool_steps: 3
     max_proposals: 2
-- name: skill_suggest
-  when: digest_volume
-  when_config:
-    min_new_digests: 7
-  handler: tesseract.scheduler.tasks.skill_suggest.SkillSuggestJob
-  enabled: true
-  on_failure: log
-  retry_policy:
-    max_retries: 0
-    backoff_seconds: 0
-  config:
-    lookback_days: 14
-    max_suggestions: 2
 - name: provider_probe
   when: provider_failover
   when_config:

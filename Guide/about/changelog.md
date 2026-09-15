@@ -16,6 +16,30 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+- **Skills and playbooks are the same thing now.** What used to be two kinds,
+  one checked on the way in and one not, is one file with one contract,
+  checked the same way whichever door it came through.
+- **When a skill goes wrong, the assistant says so, and a fix is proposed from
+  what actually happened.** It reports which skill, which version, which
+  step, and a second look reads the real record of that turn rather than
+  guessing from a description of the failure.
+- **An earlier version of a skill can be restored.** Nothing about a skill is
+  ever deleted, so a rewrite that turns out worse can be undone and the
+  version before it made live again.
+- **Retiring a skill is always your call, from the desk or from your phone.**
+  The assistant can ask whether one should stop being used. It can never
+  decide that for itself, in any mode.
+- **The observer can now suggest writing a skill**, the same way it already
+  suggests saving a memory. It only ever suggests: writing one is still the
+  assistant's own decision, on your approval.
+- **Left to work on its own, a newly written skill goes active by itself**
+  instead of waiting in your inbox, the same way every other unattended
+  change already does. Active means active from that moment, listed among
+  the skills the assistant carries with no extra step, and the same is true
+  the other way round: retiring a skill takes it off that list at once.
+- **Approving a card that proposes a new rule for how the assistant works now
+  actually saves it.** It used to flip to approved and change nothing; now
+  approving it does what the card said it would.
 - **Clearing a conversation now asks you what to keep.** Three answers,
   wherever you type `/clear`: hand the state over so the next conversation
   knows what the work was and what is left, clear but keep what the
@@ -114,14 +138,6 @@ installed, you do not need it: the app offers you the update itself.
   ones already saved correct themselves as they are added to.
 - **The Day room can be asked for from anywhere.** It is on the rail and the
   app could open it, but asking for it by name from a channel found nothing.
-- **A playbook the app offers to rewrite now shows you what you actually
-  said.** For playbooks without numbered steps it quoted nothing at all, and
-  said nothing about the corrections it had counted. It also stops offering to
-  rewrite one you have already retired, and tells you how to bring it back if
-  that is what you meant.
-- **A retired playbook says so on its own notice.** The card announcing a
-  retirement carried an Apply button that could only ever fail, because there
-  was nothing to apply. It reports what happened and asks nothing.
 - **The map tells you which records it means.** Where it said how many records
   disagree, or how many links point at something that is not there, it now
   names them and lets you ask about one. A broken link is asked about from the

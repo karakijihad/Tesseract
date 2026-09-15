@@ -216,9 +216,7 @@ tools:
   file_move: ask
   agenda_comment: auto
   skill_create: ask
-  skill_promote: ask
   skill_refine: ask
-  playbook_judge: ask        # your verdict on a playbook, so it is never the assistant grading its own work
   playbook_record: auto      # reads the usage log, the turn records and the ledger and reports what each playbook has done; writes nothing
   playbook_search: auto      # reads the playbooks already named in the prompt and returns the rest of one; nothing leaves the machine
   atlas_query: auto           # read-only walk over the derived graph; opens atlas.json and returns text
@@ -273,7 +271,6 @@ modes:
       task_propose: ask
       task_close: ask
       context_set: ask
-      playbook_judge: ask
       project_budget: ask
 
 # Path-scoped overrides — evaluated before mode overrides. Matched by prefix
@@ -294,12 +291,11 @@ path_overrides:
     # `_path_posture` takes the FIRST matching prefix, not the longest —
     # specific rules must precede the general ones they sit under.
 
-    # ─── ASK — the workshop: the assistant drafts markdown skills
-    # (SKILL.md + optional bundled scripts/) here; operator approves the
-    # write before it lands. Must win over any broader workspace/ rule. ───
+    # Skills are written only through skill_create and skill_refine, which
+    # check them first. Must stay above any broader workspace/ rule.
     - path_prefix: workspace/skills/
-      posture: ask
-      reason: "the assistant drafts skill folders here; operator approves the write"
+      posture: deny
+      reason: "skills are written only through skill_create or skill_refine, which check them and file a card"
 
     # ─── AUTO — the assistant's writable surfaces (specific paths, listed first) ───
     - path_prefix: memory-store/
@@ -450,6 +446,8 @@ workspace_cards:
       # your own transcripts. Changing that while nobody is looking is the
       # same objection the catalog edit above is held for.
       feedback_sweep: ask
+      # Your verdict on a skill, never the mode's.
+      skill_retirement: ask
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`

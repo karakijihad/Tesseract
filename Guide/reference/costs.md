@@ -34,8 +34,6 @@ A role is a seat a model sits in: the assistant you talk to, the delegation seat
 | `playbook_extract` | $0.50 |
 | `provider_watch` | $0.50 |
 | `scheduled_task` | $1.00 |
-| `skill_refinement` | $0.50 |
-| `skill_suggest` | $0.50 |
 | `watchman` | $1.00 |
 
 ## Speaking and listening are capped too
@@ -51,6 +49,6 @@ Voice is billed by the character spoken or the hour heard rather than by the tok
 
 ## The global cap is derived, not configured
 
-There is no separate global budget line to drift out of step. The ceiling is the **sum of every inner cap** — the $7.50 of role caps, the $6.50 of job caps and the $2.00 of voice caps, so **$16.00** — computed in `brain/cost/ledger.py::CostLedger.cap_usd`. Add a role, a job or a lane with a cap and the global ceiling rises by exactly that much.
+There is no separate global budget line to drift out of step. The ceiling is the **sum of every inner cap** — the $7.50 of role caps, the $5.50 of job caps and the $2.00 of voice caps, so **$15.00** — computed in `brain/cost/ledger.py::CostLedger.cap_usd`. Add a role, a job or a lane with a cap and the global ceiling rises by exactly that much.
 
 There is no single line for what the assistant spends on its own behalf, and that is deliberate: it spends against whichever role or job does the work, so the number you look at is the one that names what it was for.

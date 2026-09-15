@@ -349,28 +349,6 @@ class MemorySaveTool(Tool):
                     pass
                 link_note = "  (related-link generation errored — see writes.jsonl)"
 
-        # A correction saved mid-conversation is a correction that just
-        # happened. It lands on the playbook revision read in this session and
-        # on the step the reading turn reached, rather than waiting for the
-        # session-close reflection to notice a feedback memory exists.
-        if mem_type.value == "feedback" and context.session_id:
-            try:
-                import asyncio
-
-                from tesseract.brain.skill_usage import attribute_session_corrections
-
-                # Off the loop: it reads the usage log whole and a day of
-                # turn records, inside a turn.
-                # The memory id travels with it: this record IS the
-                # correction, and the refinement job's evidence is a step
-                # number without it.
-                await asyncio.to_thread(
-                    attribute_session_corrections, context.session_id,
-                    memory_id=fm.id,
-                )
-            except Exception:  # noqa: BLE001 — telemetry must never break the save
-                logger.warning("memory_save: skill-correction attribution failed", exc_info=True)
-
         slug_note = f" slug={fm.slug}" if fm.slug else ""
         saved_file = self._store.find_file(fm.id)
         saved_path = str(saved_file) if saved_file else ""

@@ -46,6 +46,31 @@ _GEMINI_SCHEMA_DROP_KEYS = {
 }
 
 
+def _inline_refs(schema: Any, defs: dict | None = None, seen: frozenset = frozenset()) -> Any:
+    """Replace every local `$ref` with the definition it names.
+
+    Gemini's function declarations take no references, and `$defs` is dropped
+    on the way there, so a reference left in place points at nothing and the
+    provider refuses the whole tools list. A schema with a nested model
+    (`tasks_set`'s items) is the ordinary case. A definition that refers back
+    to itself stops at a bare object rather than recursing forever.
+    """
+    if isinstance(schema, list):
+        return [_inline_refs(item, defs, seen) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    if defs is None:
+        defs = schema.get("$defs") or {}
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        name = ref[len("#/$defs/"):]
+        if name in seen or name not in defs:
+            return {"type": "object"}
+        rest = {k: v for k, v in schema.items() if k != "$ref"}
+        return _inline_refs({**defs[name], **rest}, defs, seen | {name})
+    return {key: _inline_refs(value, defs, seen) for key, value in schema.items()}
+
+
 class GeminiAdapter(ModelAdapter):
     def __init__(self, *, api_key: str, timeout: float, max_retries: int) -> None:
         from google import genai
@@ -362,9 +387,9 @@ class GeminiAdapter(ModelAdapter):
                 types.FunctionDeclaration(
                     name=tool.get("name", ""),
                     description=tool.get("description", ""),
-                    parameters=self._sanitize_schema(
+                    parameters=self._sanitize_schema(_inline_refs(
                         tool.get("input_schema", tool.get("parameters", {}))
-                    ),
+                    )),
                 )
             ]
         )

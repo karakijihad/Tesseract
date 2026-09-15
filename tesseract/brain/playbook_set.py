@@ -30,6 +30,8 @@ playbook they removed must not stop the app from starting.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from pathlib import Path
 
 from tesseract.brain.skills import SkillEntry, load_skills
@@ -38,6 +40,11 @@ from tesseract.paths import workspace_dir
 logger = logging.getLogger(__name__)
 
 CARRIED_FILENAME = "carried.txt"
+
+#: Held across every read, change and write of the carried list. Promotion
+#: runs on the loop and on worker threads, so two skills going live together
+#: would otherwise each read the old list and one name would be lost.
+_CARRIED_LOCK = threading.RLock()
 
 _BANNER = """\
 # Which playbooks the assistant sees without having to look them up.
@@ -158,15 +165,59 @@ def write_carried(chosen: list[str], path: Path | None = None) -> None:
 
     **Nothing here retires a running conversation's head.** The pointer list
     that renders `carried.txt` is inside the frozen head, so a change to the
-    dial is read by the NEXT conversation. That is the operator's ruling of
-    2026-09-10 rather than an oversight: a conversation that is running has
+    dial is read by the NEXT conversation. That is the operator's decision
+    rather than an oversight: a conversation that is running has
     already been told whatever the dial was changed for, and re-reading the
     whole prompt to deliver it costs the entire cached prefix.
     """
     target = path or carried_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     entries = load_skills(target.parent)
-    target.write_text(render(chosen, entries), encoding="utf-8")
+    # Written beside the file and moved onto it, so a reader never sees half a list.
+    tmp = target.with_name(target.name + ".writing")
+    with _CARRIED_LOCK:
+        tmp.write_text(render(chosen, entries), encoding="utf-8")
+        os.replace(tmp, target)
+
+
+def add_to_carried(name: str, path: Path | None = None) -> str | None:
+    """Add `name` to the carried list. Idempotent, and every other name on
+    the list is left exactly as it was.
+
+    A skill is carried the moment it goes live, whether that is the door's
+    own promotion or the operator's approved card, so this is the one place
+    both paths call. Returns an error string on failure rather than raising:
+    the skill has already gone live by the time this runs, and a
+    carried-list write that failed must not undo that or stop the caller.
+    """
+    target = path or carried_path()
+    try:
+        with _CARRIED_LOCK:
+            current = set(load_carried_names(target))
+            if name in current:
+                return None
+            current.add(name)
+            write_carried(sorted(current), target)
+        return None
+    except OSError as exc:
+        return f"could not add {name!r} to the carried list: {exc}"
+
+
+def remove_from_carried(name: str, path: Path | None = None) -> str | None:
+    """Take `name` off the carried list. Idempotent, and every other name on
+    the list is left exactly as it was. Returns an error string on failure,
+    never raises."""
+    target = path or carried_path()
+    try:
+        with _CARRIED_LOCK:
+            current = set(load_carried_names(target))
+            if name not in current:
+                return None
+            current.discard(name)
+            write_carried(sorted(current), target)
+        return None
+    except OSError as exc:
+        return f"could not remove {name!r} from the carried list: {exc}"
 
 
 __all__ = [
@@ -176,4 +227,6 @@ __all__ = [
     "load_carried_names",
     "render",
     "write_carried",
+    "add_to_carried",
+    "remove_from_carried",
 ]

@@ -110,6 +110,7 @@ logger = logging.getLogger(__name__)
 #: a reworded refusal would otherwise leave the document describing a
 #: sentence the runtime no longer sends.
 DENIED_PREFIX = "permission denied"
+NO_APPROVER_REASON = "ASK posture with no approval channel"
 #: NOT "declined". `ask_fn` returns one bool for two different events and the
 #: ledger keeps them apart (`result: deny` vs `result: timeout, actor:
 #: timeout`), so asserting a decline contradicts the runtime's own record
@@ -517,7 +518,7 @@ async def evaluate(
                     ),
                     is_error=True,
                     denied_hard=True,
-                    deny_reason="ASK posture with no approval channel",
+                    deny_reason=NO_APPROVER_REASON,
                 )
         else:
             # ask_fn implementations write the operator/timeout row themselves

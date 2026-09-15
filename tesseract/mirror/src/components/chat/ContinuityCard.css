@@ -1,0 +1,32 @@
+/* The continuity package, drawn as a card. `--info` marks it as the runtime's
+   own record rather than a caution or a failure (`--warn`/`--bad`), the same
+   ramp the soul's reflection cards use for the runtime speaking about itself. */
+
+.continuity-card {
+  margin: var(--space-6) 0;
+  border-left: var(--stroke-2) solid var(--info);
+  background: var(--info-wash);
+  border-radius: var(--radius-xs);
+}
+
+.continuity-card__summary {
+  margin: 0 0 var(--space-6);
+}
+
+.continuity-card__toggle {
+  margin-bottom: var(--space-6);
+}
+
+.continuity-card__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.continuity-card__list {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

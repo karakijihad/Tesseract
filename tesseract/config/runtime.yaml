@@ -62,6 +62,15 @@ tool_result_max_chars: 50000
 tool_results_per_message_max_chars: 200000
 tool_result_preview_chars: 2000
 
+# What each model's provider charges for tool schemas is measured by the
+# nightly provider check and kept in providers.yaml as schema_chars_per_token.
+# A model with no figure is measured and the figure written in. A model that
+# has one is measured again once its last reading is schema_density_recheck_days
+# old, and a reading further off than schema_density_tolerance (a fraction of
+# the figure) puts a card in front of you instead of changing the file.
+schema_density_tolerance: 0.05
+schema_density_recheck_days: 7
+
 # The largest share of the model's context window that ONE tool result may
 # take, as a fraction. A result over the line is cut, and the cut says so.
 # It bounds the results the lines above do not save: a file read, which is

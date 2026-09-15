@@ -31,7 +31,7 @@ Around that sit three relationships, ordered by how long each takes to close:
 | --- | --- | --- |
 | Tools | inside the same turn | solid |
 | Delegates | on a later turn | dashed |
-| Observer | into memory, for a future turn | dashed |
+| Observer | memory, boundary and skill suggestions, for a future turn | dashed |
 
 Below the line is the machinery with no operator in it: autonomy runs on its
 own clock, and memory is the store both it and the observer write to while the

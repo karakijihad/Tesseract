@@ -10,15 +10,24 @@ shown. One query returns the same rows.
 
 Schema (one row per chat record)::
 
-    chat_id     TEXT PRIMARY KEY   -- uuid4 hex, assigned once at creation
-    title       TEXT
-    created_at  TEXT NOT NULL      -- ISO-8601, stamped once; the day comes from here
-    started_at  TEXT
-    ended_at    TEXT
-    turn_count  INTEGER
-    model       TEXT
-    archived    INTEGER            -- 0/1
-    file_path   TEXT NOT NULL      -- absolute path on disk
+    chat_id        TEXT PRIMARY KEY   -- uuid4 hex, assigned once at creation
+    title          TEXT
+    created_at     TEXT NOT NULL      -- ISO-8601, stamped once; the day comes from here
+    started_at     TEXT
+    ended_at       TEXT
+    turn_count     INTEGER
+    model          TEXT
+    archived       INTEGER            -- 0/1
+    message_count  INTEGER            -- len(history), what a listing shows without opening the file
+    snippet        TEXT               -- first operator line, present only while the title is unnamed
+    last_active_at TEXT               -- when the chat was last actually used, not merely last written
+    file_path      TEXT NOT NULL      -- absolute path on disk
+
+A table opened with an older, narrower column set is not ALTERed: it is
+DROPped and recreated empty, because every value here is derived and the
+rebuild that repopulates it is cheaper than a migration path for a store
+nothing needs to keep. The caller sees the same "nothing trustworthy here yet"
+signal a deleted sqlite file already produces, and answers it the same way.
 
 Three things the retiring session index carried are gone with the filename they
 were parsed out of. ``date_prefix`` and its ``custom`` bucket: a uuid names no
@@ -51,6 +60,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Every column the current row shape needs. Checked against what a table on
+#: disk actually has, never against a version number — the table itself is
+#: the only record of its own shape.
+_SCHEMA_COLUMNS = frozenset({
+    "chat_id", "title", "created_at", "started_at", "ended_at", "turn_count",
+    "model", "archived", "message_count", "snippet", "last_active_at",
+    "file_path",
+})
+
 
 @dataclass(frozen=True)
 class ChatMetaRow:
@@ -63,6 +81,13 @@ class ChatMetaRow:
     model: str
     archived: bool
     file_path: str
+    # Defaulted, not because they are optional — every writer built after this
+    # was added fills them in — but because a caller from before this landed
+    # (`test_the_nightly_sweep.py` builds rows by hand) still constructs a
+    # valid row without them.
+    message_count: int = 0
+    snippet: str = ""
+    last_active_at: str | None = None
 
 
 class ChatMetadataIndex:
@@ -103,18 +128,33 @@ class ChatMetadataIndex:
             self._conn.commit()
 
     def _create_schema(self) -> None:
+        # A table already on disk from before `message_count`/`snippet`/
+        # `last_active_at` existed is missing columns a fresh CREATE TABLE IF
+        # NOT EXISTS would never add. Derived and rebuildable, so the fix is
+        # dropping the old shape rather than an ALTER TABLE per column: the
+        # table comes back up EMPTY, exactly like a deleted sqlite file, and
+        # the caller that asks for rows repopulates it the same way either way.
+        existing_cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(chat_metadata)")
+        }
+        if existing_cols and not _SCHEMA_COLUMNS.issubset(existing_cols):
+            self._conn.execute("DROP TABLE chat_metadata")
+            self._conn.commit()
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS chat_metadata (
-                chat_id     TEXT PRIMARY KEY,
-                title       TEXT,
-                created_at  TEXT NOT NULL,
-                started_at  TEXT,
-                ended_at    TEXT,
-                turn_count  INTEGER NOT NULL DEFAULT 0,
-                model       TEXT,
-                archived    INTEGER NOT NULL DEFAULT 0,
-                file_path   TEXT NOT NULL
+                chat_id        TEXT PRIMARY KEY,
+                title          TEXT,
+                created_at     TEXT NOT NULL,
+                started_at     TEXT,
+                ended_at       TEXT,
+                turn_count     INTEGER NOT NULL DEFAULT 0,
+                model          TEXT,
+                archived       INTEGER NOT NULL DEFAULT 0,
+                message_count  INTEGER NOT NULL DEFAULT 0,
+                snippet        TEXT NOT NULL DEFAULT '',
+                last_active_at TEXT,
+                file_path      TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_chat_meta_created
                 ON chat_metadata(created_at DESC);
@@ -175,7 +215,8 @@ class ChatMetadataIndex:
         """
         sql = (
             "SELECT chat_id, title, created_at, started_at, ended_at, "
-            "turn_count, model, archived FROM chat_metadata"
+            "turn_count, model, archived, message_count, snippet, "
+            "last_active_at FROM chat_metadata"
         )
         if archived_only:
             sql += " WHERE archived = 1"
@@ -193,13 +234,17 @@ class ChatMetadataIndex:
                 "created_at": created_at,
                 "started_at": started_at,
                 "ended_at": ended_at,
+                "last_active_at": last_active_at or ended_at,
                 "turn_count": int(turn_count or 0),
                 "model": model or "",
                 "archived": bool(archived),
+                "message_count": int(message_count or 0),
+                "snippet": snippet or "",
             }
             for (
                 chat_id, title, created_at, started_at, ended_at,
-                turn_count, model, archived,
+                turn_count, model, archived, message_count, snippet,
+                last_active_at,
             ) in cursor
         ]
 
@@ -259,17 +304,21 @@ class ChatMetadataIndex:
 _UPSERT_SQL = """
     INSERT INTO chat_metadata
         (chat_id, title, created_at, started_at, ended_at,
-         turn_count, model, archived, file_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         turn_count, model, archived, message_count, snippet,
+         last_active_at, file_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET
-        title      = excluded.title,
-        created_at = excluded.created_at,
-        started_at = excluded.started_at,
-        ended_at   = excluded.ended_at,
-        turn_count = excluded.turn_count,
-        model      = excluded.model,
-        archived   = excluded.archived,
-        file_path  = excluded.file_path
+        title          = excluded.title,
+        created_at     = excluded.created_at,
+        started_at     = excluded.started_at,
+        ended_at       = excluded.ended_at,
+        turn_count     = excluded.turn_count,
+        model          = excluded.model,
+        archived       = excluded.archived,
+        message_count  = excluded.message_count,
+        snippet        = excluded.snippet,
+        last_active_at = excluded.last_active_at,
+        file_path      = excluded.file_path
 """
 
 
@@ -283,5 +332,8 @@ def _values(row: ChatMetaRow) -> tuple[Any, ...]:
         int(row.turn_count or 0),
         row.model or "",
         1 if row.archived else 0,
+        int(row.message_count or 0),
+        row.snippet or "",
+        row.last_active_at,
         row.file_path,
     )

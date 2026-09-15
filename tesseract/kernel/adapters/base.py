@@ -126,6 +126,12 @@ class AdapterOptions:
     # path behind the same connection. Absence means the provider picks the
     # breakpoint, which is what every non-OpenAI entry wants.
     prompt_cache_explicit: bool = False
+    # How many characters of tool schema JSON this model's provider charges one
+    # token for, measured against the provider's own count
+    # (`providers.yaml: schema_chars_per_token`). `None` means nobody has
+    # measured this model yet, and the reader prices schemas as prose and says
+    # so; it is never a number standing in for a measurement.
+    schema_chars_per_token: float | None = None
     # Whether to request a streamed response. A per-model property of the
     # catalog entry (`providers.yaml: stream: false`), not an adapter
     # constant — the catalog already owns every other per-model quirk

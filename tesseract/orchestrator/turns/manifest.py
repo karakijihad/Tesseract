@@ -273,6 +273,16 @@ SHUTDOWN_NOTICE = (
 )
 
 
+#: Set as a turn's `reason` when it ended because `session_continue` recorded
+#: a decision and the turn stopped right there, before writing anything back.
+#: Named so `why_there_was_no_reply` can tell this silence apart from a turn
+#: that produced nothing at all: the SUCCEEDED outcome is the same for both,
+#: and only the reason says which one happened.
+CONTINUATION_PENDING_REASON = (
+    "the turn recorded a session_continue decision and stopped there"
+)
+
+
 def why_there_was_no_reply(outcome: RunOutcome | None, reason: str = "") -> str:
     """What to tell the person when a turn ended and said nothing.
 
@@ -290,7 +300,19 @@ def why_there_was_no_reply(outcome: RunOutcome | None, reason: str = "") -> str:
     were watching said the turn was stopped, and the drain then sent
     `SHUTDOWN_NOTICE` as a fresh message saying the same event in different
     words. Two tellers is a transport problem; two ACCOUNTS is this function's,
-    because it is the one that owns what a silent turn is called."""
+    because it is the one that owns what a silent turn is called.
+
+    **A pending handoff answers here too, ahead of the outcome check.** The
+    turn SUCCEEDED, so falling through to the generic sentence below would
+    tell the person nothing was said and nothing was left half done, which is
+    false: something was decided, and the boundary that acts on it runs right
+    after this."""
+    if reason == CONTINUATION_PENDING_REASON:
+        return (
+            "This turn did not write anything back. It recorded where the "
+            "work stands instead, and what that means for this conversation "
+            "is on its way."
+        )
     if outcome is RunOutcome.TRUNCATED:
         if going_down():
             return SHUTDOWN_NOTICE
@@ -660,6 +682,7 @@ class TurnRecorder:
 
 
 __all__ = [
+    "CONTINUATION_PENDING_REASON",
     "SHUTDOWN_NOTICE",
     "TurnManifestStore",
     "TurnRecorder",

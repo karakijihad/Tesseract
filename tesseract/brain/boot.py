@@ -30,6 +30,7 @@ from tesseract.agents.loader import load_agent
 from tesseract.brain.compaction_control import open_chat_sessions
 from tesseract.brain.cost import CostLedger
 from tesseract.brain.observer import Observer, build_observer_from_config
+from tesseract.brain.request_size import declared_schema_divisor
 from tesseract.brain.tools import ToolRegistry
 from tesseract.config.loader import (
     DEFAULT_COMPACT_RATIO,
@@ -42,6 +43,7 @@ from tesseract.config.loader import (
     RoleConfig,
     load_config,
     require_field as _require,
+    resolve_input_cut_chars,
     resolve_output_cap,
     resolve_temperature,
 )
@@ -58,9 +60,7 @@ from tesseract.kernel.tools.base import VALID_RISK_CLASSES, check_tool_contract
 from tesseract.kernel.tools.agent_create import AgentCreateTool
 from tesseract.kernel.tools.agent_promote import AgentPromoteTool
 from tesseract.kernel.tools.skill_create import SkillCreateTool
-from tesseract.kernel.tools.skill_promote import SkillPromoteTool
 from tesseract.kernel.tools.playbook_search import PlaybookSearchTool
-from tesseract.kernel.tools.playbook_judge import PlaybookJudgeTool
 from tesseract.kernel.tools.playbook_record import PlaybookRecordTool
 from tesseract.kernel.tools.skill_refine import SkillRefineTool
 from tesseract.kernel.tools.bash_tool import BashTool
@@ -314,6 +314,9 @@ class ChatBrainConfig:
     stream: bool = True
     # Per-model catalog quirk; absence means the provider picks its own
     # cache breakpoint. See `AdapterOptions.prompt_cache_explicit`.
+    # Measured per model; `None` is unmeasured. See
+    # `AdapterOptions.schema_chars_per_token`.
+    schema_chars_per_token: float | None = None
     prompt_cache_explicit: bool = False
     # Global, from `roles.yaml::compaction`, not a role override: it describes
     # the guard rather than who is using it. The hard ceiling on one assembled
@@ -459,6 +462,7 @@ def _chat_brain_from_ref(
         reasoning_effort=str(eff_reasoning),
         knowledge_cutoff=str(fields.get("knowledge_cutoff", "")),
         use_responses_api=bool(fields.get("use_responses_api", False)),
+        schema_chars_per_token=declared_schema_divisor(fields, _where_ref),
         prompt_cache_explicit=bool(fields.get("prompt_cache_explicit", False)),
         stream=bool(fields.get("stream", True)),
         compact_threshold=_compact_ratio(
@@ -953,6 +957,7 @@ def adapter_options_from_chat_brain(cfg: ChatBrainConfig) -> AdapterOptions:
         reasoning_effort=cfg.reasoning_effort,
         knowledge_cutoff=cfg.knowledge_cutoff,
         use_responses_api=cfg.use_responses_api,
+        schema_chars_per_token=cfg.schema_chars_per_token,
         prompt_cache_explicit=cfg.prompt_cache_explicit,
         stream=cfg.stream,
         extra=extra,
@@ -1014,7 +1019,8 @@ def load_embeddings_cfg() -> dict:
 
     Returns a dict in the legacy shape expected by EmbeddingIndex / Mirror's
     ollama probe: ``provider``, ``base_url``, ``model``, ``dimensions``,
-    ``timeout_seconds``, ``max_retries``, ``host``, ``auto_start_ollama``.
+    ``timeout_seconds``, ``max_retries``, ``input_cut_chars``, ``host``,
+    ``auto_start_ollama``.
     """
     bundle = load_bundle()
     ref = bundle.embeddings
@@ -1038,6 +1044,9 @@ def load_embeddings_cfg() -> dict:
         "dimensions": int(ref.model.fields.get("dimensions", 768)),
         "timeout_seconds": int(ref.model.fields.get("timeout_seconds", conn.timeout_seconds)),
         "max_retries": int(ref.model.fields.get("max_retries", conn.max_retries)),
+        "input_cut_chars": resolve_input_cut_chars(
+            ref.model.fields, where=f"providers.yaml::{ref.ref}"
+        ),
         "host": str(conn.extra.get("host", "this_pc")),
         "auto_start_ollama": bool(conn.extra.get("auto_start", False)),
     }
@@ -1589,6 +1598,7 @@ def build_memory_bundle(
             dimensions=embed_cfg["dimensions"],
             timeout_seconds=embed_cfg["timeout_seconds"],
             max_retries=embed_cfg["max_retries"],
+            input_cut_chars=embed_cfg["input_cut_chars"],
         )
 
     # Audit M2 fix (2026-04-29): the pipeline is always constructed —
@@ -2260,7 +2270,55 @@ def build_tool_registry(
     registry.register(AgendaCommentTool(store=agenda_store))
     registry.register(TaskProposeTool(store=agenda_store))
     registry.register(TaskWorkTool(store=agenda_store))
-    registry.register(TaskCloseTool(store=agenda_store))
+
+    # Strong references to sends still in flight: the loop holds a task only
+    # weakly, and a message collected mid-send would vanish without a log.
+    _notify_tasks: set[Any] = set()
+
+    def _notify_task_closed(item, status, by) -> None:
+        """Tell the operator a task closed, and ask for their one-key verdict.
+
+        `on_closed` is called after the transition already happened, so this
+        can only ever log: the send itself is scheduled in the background
+        rather than awaited, which is what keeps a slow or failing phone
+        message from delaying or failing the close it is reporting on.
+        `None` in the REPL and in every test, where `app` is `None` and there
+        is nobody to tell.
+        """
+        if app is None:
+            return
+        from tesseract.orchestrator.autonomy.models import AgendaStatus
+
+        async def _send() -> None:
+            try:
+                # Built and stored by the server at startup, before any turn
+                # can close a task. Absent means nothing routes messages here.
+                notifier = app.get("outbound_notifier")
+                if notifier is None:
+                    return
+                await notifier.notify("task_closed", {
+                    "item_id": item.id,
+                    "goal": (item.goal or "")[:200],
+                    "outcome": "done" if status is AgendaStatus.DONE else "failed",
+                    "verified_by": by,
+                })
+            except Exception:  # noqa: BLE001 - the task is closed either way
+                logger.exception(
+                    "task_close: could not notify the operator for %s", item.id
+                )
+
+        import asyncio
+
+        try:
+            task = asyncio.create_task(_send(), name=f"task_closed_notify:{item.id}")
+            _notify_tasks.add(task)
+            task.add_done_callback(_notify_tasks.discard)
+        except RuntimeError:
+            logger.warning("task_close: no running loop to notify for %s", item.id)
+
+    registry.register(
+        TaskCloseTool(store=agenda_store, on_closed=_notify_task_closed)
+    )
 
     from tesseract.kernel.tools.autonomy_read import AutonomyReadTool
     from tesseract.kernel.tools.channel_notify import ChannelNotifyTool
@@ -2508,9 +2566,10 @@ def build_tool_registry(
     registry.register(AgentPromoteTool(agents_dir=agents_dir, event_store=workspace_store))
 
     # Skill lifecycle, mirror of the agent
-    # Stage-10 flow. skill_create files the skill_approval proposal card
-    # (broadcast live via app_provider); skill_promote settles the open card
-    # when promotion happens chat-side. Skills live under the workspace tree.
+    # Stage-10 flow. skill_create is the one door a new skill goes through
+    # (`brain/skill_door.py::create_skill`): it files the skill_approval
+    # proposal card (broadcast live via app_provider) and promotes on its own
+    # posture where the mode allows. Skills live under the workspace tree.
     skills_dir = workspace_dir() / "skills"
     registry.register(SkillCreateTool(
         skills_dir=skills_dir,
@@ -2519,12 +2578,10 @@ def build_tool_registry(
         tool_names=lambda: frozenset(registry.names()),
         registry_provider=lambda: registry,
     ))
-    registry.register(SkillPromoteTool(skills_dir=skills_dir, event_store=workspace_store))
     registry.register(SkillRefineTool(
         skills_dir=skills_dir,
         event_store=workspace_store,
         app_provider=app_provider,
-        tool_names=lambda: frozenset(registry.names()),
     ))
 
     # The door to a playbook the turn is carrying only as a line. Same shape
@@ -2533,12 +2590,7 @@ def build_tool_registry(
     # what the usage log records.
     registry.register(PlaybookSearchTool(skills_dir=skills_dir))
 
-    # The hand on a playbook. Matching never activates a draft and the
-    # measured retirement rule cannot run without a predecessor, so this
-    # is the only thing that decides whether a playbook stays.
-    registry.register(PlaybookJudgeTool(skills_dir=skills_dir))
-
-    # What the hand reads before it is given. The panel's route calls the same
+    # What a verdict is given on. The panel's route calls the same
     # reader, so the question answers the same at the desk and on a phone.
     registry.register(PlaybookRecordTool(skills_dir=skills_dir))
 

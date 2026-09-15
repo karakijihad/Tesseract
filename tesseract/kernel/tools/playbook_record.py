@@ -1,9 +1,9 @@
 """playbook_record tool — how each playbook has actually done.
 
-The numbers a verdict is given on. `playbook_judge` takes the verdict and this
-is what the operator reads before giving it: how often each playbook was
-reached for, how those turns closed, how many corrections followed a read, and
-what those turns cost in calls and money.
+The numbers a verdict is given on. `skill_refine`'s `retire` action asks for
+the verdict and this is what the operator reads before giving it: how often
+each playbook was reached for, how those turns closed, how many corrections
+followed a read, and what those turns cost in calls and money.
 
 **It is the panel's own reader, not a channel version of it.** The cockpit's
 `/api/conscience/playbook-usage` and this tool both call
@@ -57,12 +57,12 @@ class PlaybookRecordTool(Tool):
     use_when: ClassVar[str] = (
         "Use when the operator asks how a playbook is doing, whether one is "
         "worth keeping, or which of them are being carried and never read. "
-        "Read this before asking for a verdict with `playbook_judge`, so the "
-        "decision is made on the numbers rather than on an impression."
+        "Read this before asking `skill_refine` for a retirement verdict, so "
+        "the decision is made on the numbers rather than on an impression."
     )
     not_when: ClassVar[str] = (
         "to read what a playbook says, use `playbook_search`. To act on the "
-        "answer, use `playbook_judge`. This one only reports."
+        "answer, use `skill_refine`. This one only reports."
     )
     depends_on: ClassVar[str] = ""
     receipt_kind: ClassVar[str] = "none"

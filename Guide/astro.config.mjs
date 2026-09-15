@@ -69,7 +69,7 @@ export default defineConfig({
             { slug: 'mechanisms/prompts' },
             { slug: 'mechanisms/long-conversations' },
             { slug: 'mechanisms/workspace' },
-            { slug: 'mechanisms/skills-and-playbooks' },
+            { slug: 'mechanisms/skills' },
             { slug: 'mechanisms/was-it-the-app' },
             { slug: 'mechanisms/broken-or-asked-wrong' },
             { slug: 'mechanisms/updates' },

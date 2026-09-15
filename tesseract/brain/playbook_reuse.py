@@ -152,11 +152,9 @@ class Reuse:
            read whose turn is `unjoined` or `ungraded` sits in `loads` and can
            never reach the numerator, so a revision read only in those turns
            scored a perfect 0.0 over no evidence at all. `worse_than` read that
-           as a record to beat and `skill_refinement` retires a revision that
-           measures worse than its predecessor, so a revision three people had
-           actually seen work could be withdrawn in favour of one nobody had
-           ever measured. `unjoined` has done this since it existed; `ungraded`
-           joined it.
+           as a record to beat, and a revert weighed against it would restore
+           the worse revision in favour of one nobody had ever measured.
+           `unjoined` has done this since it existed; `ungraded` joined it.
 
         Corrections alone do not make a comparison. A correction says something
         went wrong after a read; it can never say the revision worked, so it
@@ -257,37 +255,6 @@ def _closed_turn(raw: dict[str, Any]) -> ClosedTurn | None:
         succeeded=outcome == "succeeded",
         self_graded=str(raw.get("task_verification_by") or "") == "model",
     )
-
-
-def turn_record_around(session_id: str, when: datetime, *, root: Path | None = None) -> dict[str, Any] | None:
-    """The closed turn record of `session_id` whose span holds `when`, raw.
-
-    Read off the day directory of `when` and its neighbours, because a turn
-    that started before midnight closes after it.
-    """
-    from tesseract.orchestrator.turns import turns_root as live_turns_root
-
-    base = root if root is not None else live_turns_root()
-    if not base.is_dir():
-        return None
-    for offset in (0, -1, 1):
-        day_dir = base / (when + timedelta(days=offset)).date().isoformat()
-        if not day_dir.is_dir():
-            continue
-        for path in day_dir.glob("*.json"):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            turn_id = str(raw.get("run_id") or "")
-            if not turn_id or turn_session_id(turn_id) != session_id:
-                continue
-            started, ended = _moment(raw.get("started_at")), _moment(raw.get("completed_at"))
-            if started is None or ended is None:
-                continue
-            if started <= when <= ended:
-                return raw
-    return None
 
 
 def _moment(raw: Any) -> datetime | None:
@@ -434,11 +401,9 @@ def measure_all(
     rows = list(read_usage() if usage_rows is None else usage_rows)
     root = turns_root if turns_root is not None else live_turns_root()
     turns = closed_turns(root, since=since, until=until)
-    # Opt-in, because the ledger is read whole and it grows forever. Two
-    # callers here never look at the cost: `skill_refinement` asks per
-    # candidate inside a loop, so a default-on read would parse the whole
-    # file once per playbook per run, and `working_set_review` reads only
-    # `loads`. They get None, which their surfaces would print as unmeasured
+    # Opt-in, because the ledger is read whole and it grows forever. Some
+    # callers never look at the cost — `working_set_review` reads only
+    # `loads` — and get None, which their surfaces would print as unmeasured
     # rather than free if they ever printed it.
     costs = cost_by_turn(since) if with_cost else None
     return {
@@ -531,7 +496,6 @@ def measure(
 
 
 __all__ = [
-    "turn_record_around",
     "ClosedTurn",
     "TurnFact",
     "Reuse",

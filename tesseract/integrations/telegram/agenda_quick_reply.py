@@ -92,6 +92,71 @@ def looks_like_quick_reply(text: str) -> bool:
     return _AGENDA_ID.match(stripped) is not None
 
 
+# ── the operator's one-key verdict on a finished task ──────────────────────
+#
+# A verdict is not an agenda decision: it answers a task that has already
+# closed, not one still waiting on a gate. It gets its own table and its own
+# callback prefix (`v:`, in the bridge) so the two never have to be told apart
+# by anything other than which prefix arrived.
+
+VerdictVerb = Literal["good", "bad", "unused"]
+
+#: The same one-character shape as `VERB_LETTERS` above, and its own table:
+#: sharing one would make "does this letter mean approve or good" a guess the
+#: bridge would have to make from context. Three letters, three initials,
+#: nothing to assert here that isn't already obvious from the three of them.
+VERDICT_LETTERS: dict[str, VerdictVerb] = {
+    "g": "good",
+    "b": "bad",
+    "u": "unused",
+}
+
+
+def verdict_letter_for(verb: str) -> str:
+    """The one character that stands for a verdict `verb`, or `""` if none does."""
+    for letter, named in VERDICT_LETTERS.items():
+        if named == verb:
+            return letter
+    return ""
+
+
+# ``ag-YYYY-MM-DD-HHMM-<slug>: good|bad|unused``, whitespace around the colon
+# optional so both `id:good` and `id: good` reach the same reply.
+_VERDICT_REPLY = re.compile(
+    r"^(ag-\d{4}-\d{2}-\d{2}-\d{4}-[a-z0-9-]+)\s*:\s*(good|bad|unused)$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class VerdictReply:
+    task_id: str
+    verdict: VerdictVerb
+
+
+def parse_verdict_reply(text: str) -> VerdictReply | None:
+    """Return a typed verdict reply, or `None` if `text` is not one."""
+    if not text:
+        return None
+    match = _VERDICT_REPLY.match(text.strip())
+    if match is None:
+        return None
+    return VerdictReply(
+        task_id=match.group(1),
+        verdict=match.group(2).lower(),  # type: ignore[arg-type]
+    )
+
+
+def looks_like_verdict_reply(text: str) -> bool:
+    """Cheap pre-check used by the bridge before importing `verdicts.py`."""
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped.lower().startswith("ag-") or ":" not in stripped:
+        return False
+    return _VERDICT_REPLY.match(stripped) is not None
+
+
 async def _record(reply: QuickReply, *, actor: str, allowed: bool) -> None:
     """Put the decision in `approvals.jsonl`, where every other one is.
 
@@ -231,11 +296,17 @@ __all__ = [
     "QuickReply",
     "QuickReplyVerb",
     "VERB_LETTERS",
+    "VERDICT_LETTERS",
+    "VerdictReply",
+    "VerdictVerb",
     "letter_for",
+    "verdict_letter_for",
     "SNOOZE_PRIORITY_DELTA",
     "SNOOZE_PRIORITY_FLOOR",
     "apply_quick_reply",
     "format_reply_body",
     "looks_like_quick_reply",
+    "looks_like_verdict_reply",
     "parse_quick_reply",
+    "parse_verdict_reply",
 ]

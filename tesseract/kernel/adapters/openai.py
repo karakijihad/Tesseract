@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections import OrderedDict
 from typing import Any, AsyncGenerator
 
 from tesseract.kernel.adapters._estimate import tokens_from_chars
@@ -381,6 +382,16 @@ _CACHE_BREAKPOINTS = 8
 #: (974 items) at its own boundary rather than from the start.
 _ANCHOR_STRIDE = 32
 
+# How many conversations' tail marks one adapter instance remembers, so the
+# next request on the same lane can re-offer the exact index the previous
+# request wrote instead of only the shared grid. An adapter instance is built
+# once per provider connection and outlives every conversation that uses it,
+# so without a bound the map grows for as long as the backend runs. An entry
+# costs one 16-hex key plus a small int and a short digest string, so 128
+# comfortably covers every conversation live on one machine at once (cockpit,
+# channels, sub-agents) while staying a fixed, small cost.
+_TAIL_CACHE_MAX = 128
+
 
 def _breakpoint_blocks(item: dict[str, Any]) -> list[dict[str, Any]] | None:
     """The block list a breakpoint may hang on, or None if this item is not a
@@ -411,7 +422,12 @@ def _breakpoint_blocks(item: dict[str, Any]) -> list[dict[str, Any]] | None:
     return None
 
 
-def _mark_breakpoints(items: list[dict[str, Any]], boundary_at: int | None) -> int:
+def _mark_breakpoints(
+    items: list[dict[str, Any]],
+    boundary_at: int | None,
+    cache_key: str = "",
+    tail_cache: "OrderedDict[str, tuple[int, str]] | None" = None,
+) -> int:
     """Offer the provider somewhere to match, and somewhere to write.
 
     Implicit mode puts its one breakpoint at the end of the latest user or
@@ -450,6 +466,25 @@ def _mark_breakpoints(items: list[dict[str, Any]], boundary_at: int | None) -> i
     purely a grid: the anchors can sit well behind the boundary, and without a
     mark near it everything since the last anchor is re-read every turn.
 
+    **The grid alone still leaves a gap the anchors cannot close.** The tail
+    mark above moves forward every call, and until it crosses into the next
+    32-item bucket it lands nowhere the previous call also marked, so only
+    the grid anchor at index 0 is shared. Measured on a live conversation:
+    `cached` stayed frozen across seven consecutive calls whose tails walked
+    4, 8, 11, 15, 18, 22, 29 inside one bucket, and only grew once a call's
+    tail (29) happened to coincide with an anchor. The fix is to also
+    re-offer THIS lane's previous tail, by index and identity: `cache_key`
+    names the lane (the same key a request uses for `prompt_cache_key`) and
+    `tail_cache` is the calling adapter's map of lane to `(index,
+    fingerprint)` for the last tail it placed. A remembered tail is only
+    re-offered when it is still inside the current boundary, the item at that
+    index is still one the provider honours a mark on, and its fingerprint
+    (`_item_fingerprint`, the same identity check the debug log uses per
+    item) matches what was recorded: a shorter or edited conversation fails
+    that check and falls back to the grid alone rather than marking a stale
+    or wrong position. Priority when the budget is tight: this call's own
+    tail first, the previous call's tail second, nearest grid anchors last.
+
     Returns how many were placed. Zero means the caller must leave
     `prompt_cache_options` off entirely, because in explicit mode a request
     with no breakpoint is a request with no caching at all.
@@ -465,8 +500,23 @@ def _mark_breakpoints(items: list[dict[str, Any]], boundary_at: int | None) -> i
 
     wanted: list[int] = []
     tail = _eligible_at_or_below(boundary_at)
+    tail_fingerprint = _item_fingerprint(tail, items[tail]) if tail is not None else None
     if tail is not None:
         wanted.append(tail)
+
+    if tail_cache is not None and cache_key:
+        prev = tail_cache.get(cache_key)
+        if (
+            prev is not None
+            and prev[0] not in wanted
+            and prev[0] <= boundary_at
+            and prev[0] < len(items)
+            and _breakpoint_blocks(items[prev[0]]) is not None
+            and _item_fingerprint(prev[0], items[prev[0]]) == prev[1]
+            and len(wanted) < _CACHE_BREAKPOINTS
+        ):
+            wanted.append(prev[0])
+
     anchor = (boundary_at // _ANCHOR_STRIDE) * _ANCHOR_STRIDE
     while anchor >= 0 and len(wanted) < _CACHE_BREAKPOINTS:
         found = _eligible_at_or_below(anchor)
@@ -480,6 +530,13 @@ def _mark_breakpoints(items: list[dict[str, Any]], boundary_at: int | None) -> i
         blocks = _breakpoint_blocks(items[index])
         if blocks is not None:
             blocks[-1]["prompt_cache_breakpoint"] = {"mode": "explicit"}
+
+    if tail_cache is not None and cache_key and tail is not None:
+        tail_cache[cache_key] = (tail, tail_fingerprint)
+        tail_cache.move_to_end(cache_key)
+        while len(tail_cache) > _TAIL_CACHE_MAX:
+            tail_cache.popitem(last=False)
+
     return len(wanted)
 
 
@@ -600,6 +657,16 @@ class OpenAIAdapter(ModelAdapter):
         # keeps filtering to the working set exactly as before, so nothing
         # there starts sending a whole registry it cannot defer.
         self.defers_tool_loading = defers_tool_loading
+        # Explicit-cache lane state: which tail index this adapter last
+        # offered for each conversation, so the next request on that lane can
+        # re-offer it (see `_mark_breakpoints`). Keyed by `cache_key`, which
+        # is the same value sent as `prompt_cache_key`, so it never crosses
+        # conversations. Bounded by `_TAIL_CACHE_MAX`; never persisted, so a
+        # restart just costs one cold call per lane. `_mark_breakpoints`
+        # itself makes no `await` between reading and writing this dict, and
+        # asyncio only switches coroutines at an `await`, so one call runs to
+        # completion before another can touch it — no lock needed.
+        self._tail_cache: "OrderedDict[str, tuple[int, str]]" = OrderedDict()
 
     async def stream(
         self,
@@ -908,12 +975,19 @@ class OpenAIAdapter(ModelAdapter):
         # when the entry declares none, as everywhere else.
         if opts.temperature is not None:
             kwargs["temperature"] = opts.temperature
+        # Computed once and reused below for the explicit-cache lane lookup,
+        # so the tail-reoffer state is keyed by the exact value sent as
+        # `prompt_cache_key` — only gated on `instructions` here, same as the
+        # `kwargs["prompt_cache_key"]` assignment it feeds.
+        cache_key = (
+            _routing_key(instructions, messages)
+            if instructions and (self._supports_prompt_cache_key or opts.prompt_cache_explicit)
+            else ""
+        )
         if instructions:
             kwargs["instructions"] = instructions
-            if self._supports_prompt_cache_key:
-                cache_key = _routing_key(instructions, messages)
-                if cache_key:
-                    kwargs["prompt_cache_key"] = cache_key
+            if self._supports_prompt_cache_key and cache_key:
+                kwargs["prompt_cache_key"] = cache_key
         projected = self.project_tools(tools)
         if projected:
             kwargs["tools"] = build_tools_array(projected)
@@ -935,7 +1009,9 @@ class OpenAIAdapter(ModelAdapter):
         # with a 400, and the option is withheld when no breakpoint could be
         # placed, because explicit mode without one turns caching off.
         # `extra_body` because the SDK does not type the field yet.
-        if opts.prompt_cache_explicit and _mark_breakpoints(input_items, boundary_at):
+        if opts.prompt_cache_explicit and _mark_breakpoints(
+            input_items, boundary_at, cache_key, self._tail_cache
+        ):
             kwargs["extra_body"] = {"prompt_cache_options": {"mode": "explicit"}}
 
         _log_request_fingerprint(kwargs)

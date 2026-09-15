@@ -117,17 +117,14 @@ class AtlasQueryTool(Tool):
     summary: ClassVar[str] = "Ask how records connect, with a citation for every hop."
     use_when: ClassVar[str] = (
         "Use when the question is about the relationship rather than the "
-        "text: what two records have in common, what a subject gathers, why a "
-        "run happened, what a decision came out of. A question seeded in one "
-        "compartment walks to any other. Every hop says what was read, where, "
-        "and who asserted it, so you can decline any of it."
+        "text: what two records share, what a subject gathers, what a "
+        "decision came out of. A connection in the recalled-memories block "
+        "carries its id in brackets; pass it in `start_at` to walk on from "
+        "it. Every hop says what was read, where, and who asserted it."
     )
     not_when: ClassVar[str] = (
         "to find a record by what it SAYS, use `memory_search` or "
-        "`vault_search`: this reads only the connections between records. And "
-        "the recalled-memories block already carries the strongest few "
-        "connections of everything it pushed, so asking this about a record "
-        "that is in front of you is a call for something you have."
+        "`vault_search`: this reads only the connections between records."
     )
     depends_on: ClassVar[str] = ""
     receipt_kind: ClassVar[str] = "none"

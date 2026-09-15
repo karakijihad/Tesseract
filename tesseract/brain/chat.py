@@ -46,7 +46,7 @@ from tesseract.brain.auto_recall import (
 from tesseract.brain.completion_store import CompletionRecord, record_from_handle
 from tesseract.brain.cost import BudgetExhausted, CostLedger, CostUsage
 from tesseract.brain.memory_suggestion import MemorySuggestion
-from tesseract.brain.observer_reading import BoundaryNudge, format_for_injection
+from tesseract.brain.observer_reading import BoundaryNudge, SkillNudge, format_for_injection
 from tesseract.brain.observation_transcript import ObservationTranscript
 from tesseract.brain.spawns import SpawnRegistry
 from tesseract.kernel.adapters._estimate import CHARS_PER_TOKEN, tokens_from_chars
@@ -62,6 +62,7 @@ from tesseract.orchestrator import checkpoints
 from tesseract.orchestrator.agent_controller.interactive.registry import InteractiveSessionRegistry
 from tesseract.orchestrator.outcome import RunOutcome
 from tesseract.orchestrator.turns import (
+    CONTINUATION_PENDING_REASON,
     TurnRecorder,
     enter_turn,
     going_down,
@@ -91,6 +92,12 @@ logger = logging.getLogger(__name__)
 # numbers, 0.40 here against 0.5 there, and neither was ever reached.
 DEFAULT_COMPACT_THRESHOLD = DEFAULT_COMPACT_RATIO
 PENDING_SUGGESTION_CAP = 8
+#: Skill nudges are their own queue rather than sharing `_pending_suggestions`:
+#: a memory suggestion and a skill nudge from the same reading share an
+#: `observation_id`, and one queue draining both would dedupe the second
+#: against the first the way `_pending_nudge` already had to for the boundary
+#: half — see `ingest_boundary_nudge`.
+PENDING_SKILL_NUDGE_CAP = 4
 PENDING_CONSCIENCE_CAP = 4
 # Presses inside a card, waiting to ride into the next turn. Bounded where the
 # spawn queue is not, and the difference is the source: a spawn result arrives
@@ -1566,6 +1573,15 @@ class ChatSession:
     # can record what came of it. A nudge nobody can score is a nudge nobody
     # can tell is being ignored.
     _delivered_nudge: BoundaryNudge | None = field(default=None, repr=False)
+    _pending_skill_nudges: deque[SkillNudge] = field(
+        default_factory=lambda: deque(maxlen=PENDING_SKILL_NUDGE_CAP),
+        repr=False,
+    )
+    # Same reason `_last_nudge_observation_id` is a field of its own rather
+    # than sharing `_observed_ids`: the reading that carries a skill nudge
+    # often carries a memory suggestion with the same `observation_id`, and
+    # accepting the first would silently swallow the second.
+    _last_skill_nudge_observation_id: str | None = field(default=None, repr=False)
     _pending_conscience: deque[str] = field(
         default_factory=lambda: deque(maxlen=PENDING_CONSCIENCE_CAP),
         repr=False,
@@ -2122,6 +2138,20 @@ class ChatSession:
             return False
         self._last_nudge_observation_id = nudge.observation_id
         self._pending_nudge = nudge
+        return True
+
+    def ingest_skill_nudge(self, nudge: SkillNudge) -> bool:
+        """Queue the observer's skill recommendation for the next turn.
+
+        Deduped on its own id for the reason `ingest_boundary_nudge` is: a
+        reading that also carried a memory suggestion shares its
+        `observation_id`, and `_observed_ids` would otherwise swallow this
+        half the moment the suggestion was accepted first.
+        """
+        if nudge.observation_id == self._last_skill_nudge_observation_id:
+            return False
+        self._last_skill_nudge_observation_id = nudge.observation_id
+        self._pending_skill_nudges.append(nudge)
         return True
 
     def take_delivered_nudge(self) -> BoundaryNudge | None:
@@ -2781,6 +2811,7 @@ class ChatSession:
         if (
             not self._pending_suggestions
             and self._pending_nudge is None
+            and not self._pending_skill_nudges
             and not self._pending_conscience
             and not self._pending_spawn_completions
             and not self._pending_card_presses
@@ -2797,6 +2828,10 @@ class ChatSession:
             self._pending_nudge = None
         while self._pending_suggestions:
             blocks.append(format_for_injection(self._pending_suggestions.popleft()))
+        # Ranked after the boundary and the memory suggestion: a skill nudge
+        # is a recommendation for later, never for this turn.
+        while self._pending_skill_nudges:
+            blocks.append(format_for_injection(self._pending_skill_nudges.popleft()))
         while self._pending_conscience:
             blocks.append(self._pending_conscience.popleft())
         while self._pending_card_presses:
@@ -3602,6 +3637,42 @@ class ChatSession:
                 turn_tool_invocations += len(pending_calls)
                 async for result_chunk in self._run_pending_calls(pending_calls):
                     yield result_chunk
+
+                # INVARIANT — a session_continue accepted in this step ends
+                # the turn right here, and a later change to this stop has to
+                # keep all four of these true at once, not just the one in
+                # front of it:
+                #   1. tool_use/tool_result pairing: every call from this
+                #      step, session_continue's siblings included, already
+                #      has its result appended by `_run_pending_calls` above,
+                #      so nothing is left unanswered when the turn ends.
+                #   2. one funnel: this check lives in the loop every surface
+                #      shares (cockpit, channel, autonomy, headless), so the
+                #      stop is the runtime's, not a surface's.
+                #   3. only an ACCEPTED call stops the turn. A denied or
+                #      failed session_continue never reaches
+                #      `request_continuation`, so `self._continuation` is
+                #      still `None` here and the loop carries on to the next
+                #      model call exactly as it did before this existed.
+                #   4. a clean ending: `return` inside this `try` reaches the
+                #      same `finally` a normal finished turn reaches, so
+                #      history is persisted, the turn record closes, stats
+                #      are emitted and the observer notify still fires. No
+                #      new ending shape, no error surfaced.
+                # The hard-boundary path (a turn that outgrows the window
+                # ceiling mid-turn) is untouched: it is decided above, on the
+                # NEXT iteration's entry, and this returns before iteration
+                # ever advances.
+                if self._continuation is not None:
+                    logger.debug(
+                        "chat: session_continue recorded a decision (iter=%d), "
+                        "ending the turn here so after_turn's boundary runs "
+                        "now instead of after another model round trip",
+                        iteration,
+                    )
+                    turn_outcome = RunOutcome.SUCCEEDED
+                    turn_reason = CONTINUATION_PENDING_REASON
+                    return
 
                 injected = self._drain_user_injections()
                 if injected:
@@ -4465,6 +4536,11 @@ class ChatSession:
         self._pending_nudge = None
         self._delivered_nudge = None
         self._last_nudge_observation_id = None
+        # Same reasoning as the boundary nudge just above: a skill nudge about
+        # the conversation being wiped is about a conversation the next turn
+        # never saw either.
+        self._pending_skill_nudges.clear()
+        self._last_skill_nudge_observation_id = None
         # A boundary owed by the conversation being wiped is owed by nobody:
         # this IS the boundary, or an operator's `/reset` that outranks it.
         self._owes_a_boundary = False
@@ -4622,8 +4698,14 @@ class ChatSession:
         try:
             from tesseract.brain.request_size import measure_tools, wire_entries_for
 
+            # The model that answered, not the one the session was built for:
+            # after a failover they tokenize differently, and a fallback with no
+            # measured figure is priced as prose, which reads high. The billing
+            # path reads the same seam for the same reason.
+            answered = getattr(self.adapter, "last_used_options", None) or self.options
             size = measure_tools(
-                wire_entries_for(self.registry, set(self._enabled_extended_tools))
+                wire_entries_for(self.registry, set(self._enabled_extended_tools)),
+                schema_chars_per_token=answered.schema_chars_per_token,
             ).tokens
         except Exception:
             log.warning("could not size the tools array for the boundary", exc_info=True)

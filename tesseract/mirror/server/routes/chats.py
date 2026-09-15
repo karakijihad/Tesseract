@@ -38,10 +38,12 @@ async def list_chats_handler(request: web.Request) -> web.Response:
     to archived alone, which is what the drawer's archive section wants and
     what the widener could never express.
 
-    Off the event loop: building the rows opens and JSON-parses every record,
-    which measured 154 ms over a 3.3 MB library and grows with how long the
-    operator has owned the app. The cost is the same in a thread; what changes
-    is that health, heartbeats and inbound turns are not held behind it.
+    ``chat_store.list_chats`` is index-served now, one query rather than a
+    parse of every record, but it can still fall back to opening every
+    transcript in the library (a fresh install, a deleted or old-shaped
+    index) and sqlite itself is blocking I/O either way, so this stays off
+    the event loop: health, heartbeats and inbound turns must never wait on
+    it.
     """
     raw = (request.query.get("archived") or "").lower()
     rows = await asyncio.to_thread(

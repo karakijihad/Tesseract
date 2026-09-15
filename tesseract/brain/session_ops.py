@@ -69,11 +69,9 @@ def _summarize_reflection_call(tc: Any) -> dict[str, Any] | None:
     if tc is None or tc.name not in _REFLECTION_TOOLS:
         return None
     args = tc.input if isinstance(tc.input, dict) else {}
-    save_type = ""
     if tc.name == "memory_save":
         title = str(args.get("title") or "").strip()
         snippet = str(args.get("content") or "").strip()
-        save_type = str(args.get("type") or "").strip()
     elif tc.name == "diary_append":
         title = "diary entry"
         snippet = str(args.get("text") or "").strip()
@@ -87,11 +85,6 @@ def _summarize_reflection_call(tc: Any) -> dict[str, Any] | None:
         "title": title[:120],
         "snippet": snippet[:_SNIPPET_CHARS],
         "status": "pending",
-        # A `feedback`-typed memory_save is an operator
-        # correction. Carried so `_attribute_skill_corrections` can fire ONLY
-        # when the save actually persisted (result `status == "saved"`), not
-        # when it was deduped / policy-blocked / errored.
-        "save_type": save_type,
     }
 
 
@@ -200,41 +193,7 @@ async def _reflect(
     except Exception:
         log.exception("reflection (%s) failed", reason)
         return calls
-    await _attribute_skill_corrections(session, calls)
     return calls
-
-
-async def _attribute_skill_corrections(session: ChatSession, calls: list[dict[str, Any]]) -> None:
-    """If this reflection DURABLY saved an operator correction (a
-    `feedback` memory that actually persisted, result ``status == "saved"``),
-    down-weight the skills consulted this session. A deduped / policy-blocked /
-    errored feedback save is NOT a durable correction and must not fire.
-    Best-effort: telemetry must never break reflection."""
-    saved = [
-        c for c in calls
-        if c.get("save_type") == "feedback" and c.get("status") == "saved"
-    ]
-    if not saved:
-        return
-    # The memory that IS the correction, so the evidence can carry the words
-    # and not just a step number. `_merge_result_metadata` fills `memory_id`
-    # from the tool result; it is empty when the result carried none, and the
-    # row then says nothing rather than guessing. The FIRST durable feedback
-    # save is the one attributed, matching the single row this writes.
-    memory_id = str(saved[0].get("memory_id") or "")
-    try:
-        import asyncio
-
-        from tesseract.brain.skill_usage import attribute_session_corrections
-
-        # Off the loop: it reads the usage log whole and a day of turn records.
-        await asyncio.to_thread(
-            attribute_session_corrections,
-            session.tool_context.session_id,
-            memory_id=memory_id,
-        )
-    except Exception:  # noqa: BLE001
-        log.warning("reflection: skill-correction attribution failed", exc_info=True)
 
 
 # `compact_with_reflection` and `auto_compact_if_needed` were here, and the
@@ -301,8 +260,58 @@ def clone_for_reflection(session: ChatSession) -> ChatSession:
     describes how a turn against THAT model behaves has to come with it: a
     field left off here is a reflection turn running on the live model under
     somebody else's numbers.
+
+    ## Why the held head rides along (2026-09-15)
+
+    Measured on `cost-tracking.jsonl`: every reflection's first call landed
+    `cached_tokens: 0` while its next three, inside the same clone's own tool
+    loop, cached normally. The clone used to start with no head of its own, so
+    its first turn read one fresh through `_current_system_prompt()` — which
+    rereads memory, the capsule and the directives off disk. By the time the
+    background task actually ran, the SAME boundary that spawned it had
+    already written the checkpoint and archived the transcript, both of which
+    feed that read, so the fresh head never matched the one the provider had
+    just cached for the live conversation. The fix is not a fresher read, it
+    is no read at all: `ChatSession._head_for_turn` already freezes a
+    conversation's head for its whole life in `_held_head` / `_held_for` (see
+    that method), so the live session is still holding, at this exact moment,
+    the same bytes its last request sent. Copying it is the whole fix.
+
+    Every property this has to hold at once, so a later change checks itself
+    against all of them rather than the one that prompted it:
+
+    1. **Byte-identical head.** `_held_head` is copied verbatim, not rebuilt.
+       It is frozen for the conversation's life already, so there is no
+       fresher copy to prefer — the live session's own next real turn would
+       read the exact same field.
+    2. **Same cache lane.** `_conversation_lane` (kernel/adapters/openai.py)
+       keys on the earliest non-system message, which `history=list(...)`
+       already reproduces exactly; nothing else needs to be threaded through
+       for the routing key to match.
+    3. **Same tool array.** `_enabled_extended_tools` is a plain field
+       `__post_init__` binds onto the (copied) `tool_context`, so a bare
+       `ChatSession(...)` call always hands the clone a fresh, empty set
+       regardless of what the live conversation had unlocked mid-session.
+       Copied by VALUE (`.update`), never by reference — a shared set would
+       let a `tool_search` call inside the reflection silently unlock a tool
+       on the live conversation too, the exact class of bug the tool_context
+       copy below already exists to prevent.
+    4. **No shared mutable state past construction.** `copy.copy`, NOT the
+       live object (agent_factory.py idiom): `ChatSession.__post_init__`
+       assigns `tool_context.spawns` and `tool_context.enabled_extended_tools`
+       onto whatever context it is given, so sharing the live one by
+       reference let the clone silently wipe the live session's spawn
+       registry and extended-tool set every background reflect (audit
+       2026-07-12). `_held_head` is an immutable `str`, safe to alias as-is.
+    5. **Falls back, once, when there is nothing to copy.** A session
+       rehydrated after a restart and never yet sent a live turn has no held
+       head (`_held_head is None`) even though its history is not empty. The
+       clone then takes the fresh read it always used to — today's
+       behaviour — and it is logged so that fallback stays visible rather
+       than silently reverting to the old cache-miss shape.
     """
-    return ChatSession(
+    held_head, held_for = session._held_head, session._held_for
+    clone = ChatSession(
         adapter=session.adapter,
         system_prompt=session.system_prompt,
         max_tool_iterations=session.max_tool_iterations,
@@ -325,6 +334,21 @@ def clone_for_reflection(session: ChatSession) -> ChatSession:
         prompt_builder=session.prompt_builder,
         cost_ledger=session.cost_ledger,
     )
+    if held_head is not None:
+        # The snapshot itself: the exact bytes the live conversation's last
+        # request sent as its head, taken before anything past this point
+        # (the checkpoint write, the archive, the clear) can move it.
+        clone._held_head = held_head
+        clone._held_for = held_for
+    else:
+        log.info(
+            "reflect_in_background: %s never held a head of its own — "
+            "reflection reads one fresh, as it did before this fix",
+            getattr(session.tool_context, "chat_id", "") or "unknown",
+        )
+    # By value, never by reference — see invariant 3 above.
+    clone._enabled_extended_tools.update(session._enabled_extended_tools)
+    return clone
 
 
 def reflect_in_background(

@@ -1,16 +1,17 @@
 """What the observer reads back from one call, decoded.
 
-The observer sends one request per turn and the reply may carry two
-independent things: a memory suggestion, which is what to keep, and a boundary
-nudge, which is whether this conversation should stop and hand its work over.
-They are parsed together because they arrive together. One call, one billing
-row: a second model call for the second signal is what GOVERNANCE §3 exists to
-stop.
+The observer sends one request per turn and the reply may carry three
+independent things: a memory suggestion, which is what to keep; a boundary
+nudge, which is whether this conversation should stop and hand its work over;
+and a skill nudge, which is whether a repeated piece of work looks worth a
+skill. They are parsed together because they arrive together. One call, one
+billing row: a second model call for a second signal is what GOVERNANCE §3
+exists to stop.
 
-Either half may be absent, and a malformed half is dropped without taking the
-other with it. Nothing here decides anything. The nudge is a recommendation the
-agent may refuse, per the owner's document §24 and Invariant 6; the runtime
-still owns the hard boundary.
+Any half may be absent, and a malformed half is dropped without taking the
+others with it. Nothing here decides anything. The nudge and the skill
+recommendation are both things the agent may refuse; the runtime still owns
+the hard boundary, and the assistant still owns whether a skill gets drafted.
 """
 
 from __future__ import annotations
@@ -59,22 +60,39 @@ class BoundaryNudge:
 
 
 @dataclass(frozen=True)
+class SkillNudge:
+    """The observer's read that a repeated piece of work looks worth a skill.
+
+    Like `BoundaryNudge`, a recommendation and nothing more: the assistant
+    drafts nothing on this alone, and does so with its own `skill_create`
+    tool if it agrees.
+    """
+
+    name: str
+    reason: str
+    observation_id: str
+
+
+@dataclass(frozen=True)
 class ObserverReading:
     suggestion: MemorySuggestion | None = None
     nudge: BoundaryNudge | None = None
+    skill: SkillNudge | None = None
 
 
 EMPTY_READING = ObserverReading()
 
 
-def format_for_injection(signal: MemorySuggestion | BoundaryNudge) -> str:
+def format_for_injection(signal: MemorySuggestion | BoundaryNudge | SkillNudge) -> str:
     """One JSON object per observer signal, whichever role it came from.
 
     Two fields carry the routing and they are not the same question.
     `observer` names the ROLE, which is what an agent sorts by: a `boundary`
     is about whether this conversation should go on at all and outranks a
-    `memory`, which is housekeeping. `tag` names the specific act inside that
-    role. An agent that reads only `observer` still knows what to do first.
+    `memory`, which is housekeeping, and a `skill` nudge, which is a
+    recommendation for later rather than for this turn. `tag` names the
+    specific act inside that role. An agent that reads only `observer` still
+    knows what to do first.
 
     JSON rather than a labelled block because these travel together in one
     message and a reader has to tell where one ends and the next begins.
@@ -87,6 +105,14 @@ def format_for_injection(signal: MemorySuggestion | BoundaryNudge) -> str:
             "observer": "boundary",
             "id": signal.observation_id,
             "tag": signal.recommendation,
+            "reason": signal.reason,
+        }
+    elif isinstance(signal, SkillNudge):
+        payload = {
+            "observer": "skill",
+            "id": signal.observation_id,
+            "tag": "draft",
+            "name": signal.name,
             "reason": signal.reason,
         }
     else:
@@ -109,18 +135,20 @@ def to_envelope_data(n: BoundaryNudge) -> dict[str, Any]:
     }
 
 
-def parse_reading(raw: str, fallback_observation_id: str) -> ObserverReading:
+def parse_reading(raw: str, fallback_observation_id: str, *, silence: str) -> ObserverReading:
     """Decode the observer's reply into whichever halves survived.
 
-    `NONE`, empty text, undecodable JSON and a non-object payload all yield an
-    empty reading. A half that fails validation is dropped and logged at
-    WARNING; the other half is still returned, because one bad field is not a
-    reason to throw away a good observation.
+    `silence` is the sentinel word the card tells the model means "nothing"
+    (`NONE` today, but the card owns the word, not this function). Empty
+    text, undecodable JSON and a non-object payload all yield an empty
+    reading too. A half that fails validation is dropped and logged at
+    WARNING; the other halves are still returned, because one bad field is
+    not a reason to throw away a good observation.
     """
     text = raw.strip()
     if not text:
         return EMPTY_READING
-    if text.upper().rstrip(".!") == "NONE":
+    if text.upper().rstrip(".!") == silence.strip().upper():
         return EMPTY_READING
     text = strip_code_fence(text)
 
@@ -133,16 +161,18 @@ def parse_reading(raw: str, fallback_observation_id: str) -> ObserverReading:
         logger.warning("observer reading payload not a dict: %r", payload)
         return EMPTY_READING
 
-    # Two accepted shapes. The envelope carries both halves under their own
-    # keys; a bare object is a suggestion on its own, which is what the prompt
+    # Two accepted shapes. The envelope carries every half under its own key;
+    # a bare object is a suggestion on its own, which is what the prompt
     # asked for before this phase and what a model falls back to when it
     # answers from habit rather than from the schema in front of it.
-    if "suggestion" in payload or "nudge" in payload:
+    if "suggestion" in payload or "nudge" in payload or "skill" in payload:
         suggestion_payload = payload.get("suggestion")
         nudge_payload = payload.get("nudge")
+        skill_payload = payload.get("skill")
     else:
         suggestion_payload = payload
         nudge_payload = None
+        skill_payload = None
         if "recommendation" in payload:
             # A reply that meant to nudge and put the fields at the top level
             # instead of under `nudge`. The suggestion half still parses, so
@@ -156,25 +186,8 @@ def parse_reading(raw: str, fallback_observation_id: str) -> ObserverReading:
     return ObserverReading(
         suggestion=_suggestion_or_none(suggestion_payload, fallback_observation_id),
         nudge=_nudge_or_none(nudge_payload, fallback_observation_id),
+        skill=_skill_nudge_or_none(skill_payload, fallback_observation_id),
     )
-
-
-READING_SCHEMA_FOR_PROMPT = """{
-  "suggestion": null | {
-    "kind": "remember" | "consolidate" | "reread",
-    "target":
-      | { "kind": "memory_path", "path": "<path/to/memory.md>" }
-      | { "kind": "topic_slug",  "slug": "<short-kebab-slug>" }
-      | { "kind": "quote",       "turn_index": <int>, "text": "<verbatim snippet>" },
-    "reason": "<= 180 chars, one sentence",
-    "confidence": 0.0-1.0,
-    "observation_id": "obs_YYYYMMDD_HHMMSS_<4hex>"
-  },
-  "nudge": null | {
-    "recommendation": "continue" | "reset",
-    "reason": "<= 180 chars, one sentence naming what you saw"
-  }
-}"""
 
 
 def _suggestion_or_none(payload: Any, fallback_observation_id: str) -> MemorySuggestion | None:
@@ -211,6 +224,32 @@ def _nudge_or_none(payload: Any, fallback_observation_id: str) -> BoundaryNudge 
 
     return BoundaryNudge(
         recommendation=recommendation,
+        reason=reason,
+        observation_id=observation_id,
+    )
+
+
+def _skill_nudge_or_none(payload: Any, fallback_observation_id: str) -> SkillNudge | None:
+    if payload is None:
+        return None
+    try:
+        if not isinstance(payload, dict):
+            raise TypeError(f"skill must be an object, got {type(payload).__name__}")
+        name = str(payload["name"]).strip()
+        if not name:
+            raise ValueError("name is empty")
+        reason = collapse_to_one_line(payload["reason"])
+        if not reason:
+            raise ValueError("reason is empty")
+        observation_id = str(
+            payload.get("observation_id") or fallback_observation_id
+        ).strip() or fallback_observation_id
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning("observer skill nudge invalid, dropped: %s | payload=%r", exc, payload)
+        return None
+
+    return SkillNudge(
+        name=name,
         reason=reason,
         observation_id=observation_id,
     )
