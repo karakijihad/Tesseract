@@ -23,6 +23,7 @@ from .models import (
     normalize_root,
     utc_now_iso,
 )
+from .own_tree import why_root_is_refused
 from .paths import registry_path
 
 # The registry is one JSON file under a read-modify-write cycle. This
@@ -36,6 +37,13 @@ class ProjectStoreError(RuntimeError):
     """The registry exists but could not be read as a registry."""
 
 
+class ProjectRootRefused(ProjectStoreError):
+    """The root names the app's own code, so it cannot be a project.
+
+    Every caller of `register`, `set_active` and `set_active_if_root_matches`
+    already catches `ProjectStoreError`, so this reaches them unchanged."""
+
+
 class ProjectRootChanged(RuntimeError):
     """The record moved to a different root between a check and the write."""
 
@@ -45,6 +53,12 @@ class UnknownProjectError(KeyError):
 
     def __str__(self) -> str:  # KeyError's repr quotes the message
         return self.args[0] if self.args else super().__str__()
+
+
+def _usable(project: Project | None) -> Project | None:
+    if project is None or why_root_is_refused(project.root):
+        return None
+    return project
 
 
 class ProjectStore:
@@ -111,6 +125,9 @@ class ProjectStore:
         held across it and the write.
         """
         with _WRITE_LOCK:
+            refusal = why_root_is_refused(project.root)
+            if refusal:
+                raise ProjectRootRefused(refusal)
             registry = self._load()
             root = normalize_root(project.root)
             existing = next(
@@ -174,6 +191,9 @@ class ProjectStore:
                 raise UnknownProjectError(
                     f"no project registered with id {project_id!r}"
                 )
+            refusal = why_root_is_refused(project.root)
+            if refusal:
+                raise ProjectRootRefused(refusal)
             project = project.model_copy(update={"last_active_at": utc_now_iso()})
             registry.projects[project_id] = project
             registry.active_id = project_id
@@ -208,6 +228,9 @@ class ProjectStore:
                     f"{project_id!r} now points at {project.root!r}, not the "
                     f"{expected_root!r} that was checked; nothing was activated"
                 )
+            refusal = why_root_is_refused(project.root)
+            if refusal:
+                raise ProjectRootRefused(refusal)
             project = project.model_copy(update={"last_active_at": utc_now_iso()})
             registry.projects[project_id] = project
             registry.active_id = project_id
@@ -228,6 +251,20 @@ class ProjectStore:
 
     def get(self, project_id: str) -> Project | None:
         return self._load().projects.get(project_id)
+
+    def get_usable(self, project_id: str) -> Project | None:
+        """`get`, except a row whose folder is the app's own code reads as none.
+
+        `get`, `active` and `list_projects` stay raw, so a row written before
+        the store refused such folders can still be seen and removed. Anything
+        that turns a row into work (a task's checks, a command's folder) reads
+        through here instead, so an old row never runs anything.
+        """
+        return _usable(self.get(project_id))
+
+    def active_usable(self) -> Project | None:
+        """`active`, except a refused row reads as no project open."""
+        return _usable(self.active())
 
     def list_projects(self) -> list[Project]:
         """Every registered project, name-sorted for stable operator output."""
@@ -377,6 +414,7 @@ class ProjectStore:
 
 __all__ = [
     "ProjectRootChanged",
+    "ProjectRootRefused",
     "ProjectStore",
     "ProjectStoreError",
     "UnknownProjectError",

@@ -49,8 +49,12 @@ export function ContinuityCard({ package: pkg, timestamp }: Props) {
 
   return (
     <div className="continuity-card">
-      <Block title={TITLE} meta={time}>
-        <p className="continuity-card__summary t-meta">{continuitySummary(pkg)}</p>
+      {/* `t-body` on the title, summary and field rows is the same typography
+          utility class (tokens.css) that carries the chat body font size and
+          line height everywhere else in the app; the timestamp meta stays at
+          its own smaller size, same as a message's own footer time. */}
+      <Block title={<span className="t-body">{TITLE}</span>} meta={time}>
+        <p className="continuity-card__summary t-body">{continuitySummary(pkg)}</p>
         <Disclosure
           open={open}
           onToggle={() => setOpen(v => !v)}
@@ -60,7 +64,7 @@ export function ContinuityCard({ package: pkg, timestamp }: Props) {
           <span className="t-meta">{open ? 'hide the detail' : 'show the detail'}</span>
         </Disclosure>
         {open && (
-          <div className="continuity-card__fields" id={bodyId}>
+          <div className="continuity-card__fields t-body" id={bodyId}>
             {pkg.objective && <Fact label="Objective">{pkg.objective}</Fact>}
             {pkg.phase && <Fact label="Phase">{pkg.phase}</Fact>}
             {pkg.completed.length > 0 && (

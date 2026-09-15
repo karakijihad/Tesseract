@@ -376,6 +376,19 @@ export interface SessionStatsData {
   // `payload_tokens + rest_tokens`, never `payload_tokens + conversation_tokens`.
   // Optional for the same reason as the rest.
   rest_tokens?: number;
+  // What the provider actually reported for this conversation's COLD
+  // START: the first model call since it began, or since a reset or a
+  // consolidation boundary last cleared it. Fixed for the life of the
+  // conversation once it lands, unlike `last_request_tokens` below, which
+  // moves every turn. Undefined until that first call has happened, which
+  // is not a zero: a zero would read as an empty request rather than "not
+  // measured yet".
+  first_request_tokens?: number;
+  // What the provider actually reported for the single most recent model
+  // call, not the whole turn's summed `last_turn_input_tokens`. Undefined
+  // until the newest call has reported its usage, same reasoning as
+  // `first_request_tokens`.
+  last_request_tokens?: number;
 }
 
 /** Where the boundary actually happens, which is what a fullness figure is

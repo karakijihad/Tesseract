@@ -52,6 +52,7 @@ log = logging.getLogger(__name__)
 
 NotificationCategory = Literal[
     "workspace_change_applied",
+    "workspace_change_refused",
     # Was missing from this list while `BROADCASTS` carried it. The tuple
     # below is derived from the declaration, so the drift cost nothing at
     # runtime and would have cost a type check.

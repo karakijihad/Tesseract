@@ -91,7 +91,9 @@ file you wrote by hand would make it silently vanish.
 
 Some gaps do block, because a skill with them could not be followed safely: a
 step naming a tool the runtime does not have, a step naming a tool the skill
-itself forbids, a declared but empty list of steps, anything that reads like a
+itself forbids, a step written with any key other than `do` and `tool` (a
+misspelled `tools:` would otherwise leave that step with no tool and no sign
+of it), a declared but empty list of steps, anything that reads like a
 credential, and a path outside your home tree or one that cannot be shown to
 be inside it (a network share, a variable, a tilde, a drive-relative path).
 
@@ -155,9 +157,12 @@ name alone and is looked up with `playbook_search` when it looks relevant.
 That split is about how cheaply a skill is found, never about which skills the
 assistant is allowed to use.
 
-Every time a skill is read, one line is written to a usage log: which skill,
-which revision, and whether the read went through. A use that goes well
-writes nothing more.
+Either way, the assistant opens the skill's file with `workspace_read`, the
+tool that reads your workspace, and that read shows in the conversation as a
+tool call like any other, so you can see which skill it followed. Every time a
+skill is read, one line is written to a usage log: which skill, which
+revision, and whether the read went through. A use that goes well writes
+nothing more.
 
 ### 5. It goes wrong, and the assistant says so
 

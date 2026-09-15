@@ -114,12 +114,15 @@ interface ChatState {
   addRuntimeNote: (chatId: string | null, text: string, mark: string) => void;
   /** The one boundary note that says the clear already happened
    *  (`session_note` with `cleared: true`). Replaces the slice the way
-   *  `reset` does and seeds it with only this note, so the note is
+   *  `reset` does and seeds it with this note plus whatever bubbles were
+   *  still `queued` (sent mid the turn that just cleared, not yet delivered
+   *  to the server's turn) in their original send order, so the note is
    *  self-sufficient: whatever order the server's `session_reset` and this
-   *  note actually arrive in, the chat ends up holding nothing said before
-   *  the boundary. `reset` then `addRuntimeNote` already produces this same
-   *  state when both arrive in the order they are sent; this is what makes
-   *  it true even when they do not. */
+   *  note actually arrive in, the chat ends up holding nothing DELIVERED
+   *  before the boundary, while nothing the server still owes an answer to
+   *  disappears from the screen. `reset` then `addRuntimeNote` already
+   *  produces this same state when both arrive in the order they are sent;
+   *  this is what makes it true even when they do not. */
   startFreshWithNote: (chatId: string | null, text: string, mark: string) => void;
   addError: (chatId: string | null, message: string) => void;
   addStreamNote: (chatId: string | null, text: string) => void;
@@ -376,6 +379,19 @@ function _flushPendingDelta(id: string, flush: (segments: AssistantStreamSegment
   flush(segments);
 }
 
+// `reset` and `startFreshWithNote` both replace a slice's `messages`
+// wholesale. A bubble still `queued` at that instant has not been delivered
+// to the server's turn yet — the server's per-chat FIFO queue
+// (`chat_queues` in `turn_intake.py`) is untouched by the same clear, so the
+// server will still run it. Dropping it from the live view here would leave
+// the screen holding less than the server is about to do, and the reply
+// would land with nothing above it to explain what it is answering. Pulled
+// out because `reset` and `startFreshWithNote` both need it, and both need
+// it to behave the same way regardless of which one runs first.
+function _carryQueued(slice: ChatSlice | undefined): ChatMessage[] {
+  return slice ? slice.messages.filter(m => m.status === 'queued') : [];
+}
+
 function _dropPendingDelta(id: string): void {
   const sc = _scratch(id);
   if (sc.handle !== null && typeof cancelAnimationFrame === 'function') {
@@ -544,12 +560,22 @@ export const useConversationStore = create<ChatState>((set, get) => ({
   reset: (chatId) => {
     const id = _resolveId(get(), chatId);
     if (!id) return;
+    // Carried BEFORE the slice is dropped — this is the last point that
+    // still holds whatever the operator sent while the turn just cleared was
+    // still running.
+    const carried = _carryQueued(get().chats.get(id));
     _dropPendingDelta(id);
     _rafByChat.delete(id); // the slice is replaced wholesale; drop its rAF scratch
-    _queueCounterByChat.delete(id); // and its FIFO queue-position counter
+    // The fresh slice is not streaming, so a send right after this one takes
+    // `sendUserMessage`'s non-queued branch regardless (which resets this
+    // counter to 0 itself); the carried bubbles keep the `queuePosition` they
+    // already had on their own message objects. `beginTurn`, when the
+    // server's still-pending turn actually starts, recomputes this counter
+    // from what is still queued, so nothing here needs to survive until then.
+    _queueCounterByChat.delete(id);
     set(state => {
       const chats = new Map(state.chats);
-      chats.set(id, _makeSlice());
+      chats.set(id, { ..._makeSlice(), messages: carried });
       return { chats, dropTtsUntilTurnEnd: false };
     });
   },
@@ -898,10 +924,15 @@ export const useConversationStore = create<ChatState>((set, get) => ({
   startFreshWithNote: (chatId, text, mark) => {
     const id = _resolveId(get(), chatId);
     if (!id) return;
+    // Carried BEFORE the slice is dropped, same as `reset` — whatever is
+    // still `queued` on whatever slice is live right now (already carried
+    // forward once if `session_reset` ran first) rides along under the note.
+    const carried = _carryQueued(get().chats.get(id));
     // Same three cleanups `reset` does, for the same reason: the slice is
     // being replaced wholesale, so anything keyed off the old one (a pending
     // rAF flush, a queue position counter) would otherwise apply to a chat
-    // that no longer looks like the one it was scheduled against.
+    // that no longer looks like the one it was scheduled against — see
+    // `reset`'s comment for why the counter can go unconditionally.
     _dropPendingDelta(id);
     _rafByChat.delete(id);
     _queueCounterByChat.delete(id);
@@ -918,6 +949,7 @@ export const useConversationStore = create<ChatState>((set, get) => ({
             timestamp: Date.now(),
             status: 'complete' as const,
           },
+          ...carried,
         ],
       });
       return { chats, dropTtsUntilTurnEnd: false };

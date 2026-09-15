@@ -122,7 +122,15 @@ export function Markdown({
   return (
     <div className="md">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        remarkPlugins={[
+          remarkGfm,
+          remarkBreaks,
+          // A single `$` is a dollar sign everywhere on this app's surfaces,
+          // never the start of a formula: an amount like "$0.02 over 76
+          // calls, against a daily cap of $15.00" was reading as one unclosed
+          // equation. `$$...$$` keeps meaning math.
+          [remarkMath, { singleDollarTextMath: false }],
+        ]}
         rehypePlugins={rehypePlugins as never}
         components={components}
       >

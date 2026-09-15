@@ -2267,6 +2267,16 @@ def build_tool_registry(
     from tesseract.orchestrator.autonomy.agenda_store import AgendaStore
 
     agenda_store = AgendaStore()
+    if app is not None:
+        # task_propose/task_work/task_close/agenda_comment mutate THIS store,
+        # a separate instance from the kernel's own `_agenda`. Without a hook
+        # here a task closing through the tool was invisible on WS until the
+        # next manual refresh, even though kernel-internal mutations already
+        # fanned out live. Same factory as the kernel hook, so neither store
+        # can double-fire the other's events.
+        from tesseract.orchestrator.autonomy.broadcast import agenda_broadcast_hook
+
+        agenda_store.set_broadcast_hook(agenda_broadcast_hook(app))
     registry.register(AgendaCommentTool(store=agenda_store))
     registry.register(TaskProposeTool(store=agenda_store))
     registry.register(TaskWorkTool(store=agenda_store))
@@ -2777,6 +2787,14 @@ def build_tool_registry(
     # to ASK) cannot recur.
     _wire_tool_defaults(registry, policy)
 
+    # Skills are judged only against the registry that holds the operator's
+    # own tools. One built to read facts about tools (the working-set and
+    # Guide generators, a dial change being written) leaves them out, and
+    # judging a skill against it logged a step naming a real custom tool as a
+    # tool that does not exist.
+    if include_home_tools:
+        check_playbooks(workspace_dir() / "skills", tool_names=frozenset(registry.names()))
+
     # Stash the live vault_librarian on the registry so the Mirror app
     # (and any consumer who already holds a registry reference) can
     # reach `compile_source()` without rebuilding the librarian.
@@ -2966,8 +2984,9 @@ def _wire_tool_defaults(
     # And of the playbooks, which are the third thing dispatched by name: a
     # step naming a tool that is not registered here is a procedure that
     # cannot run. Reported, never raised, because every skill is the
-    # operator's (`playbook_contract` says why).
-    check_playbooks(workspace_dir() / "skills", tool_names=frozenset(registry.names()))
+    # operator's (`playbook_contract` says why). Run by `build_tool_registry`,
+    # which is the one caller that knows whether the operator's own tools are
+    # in the registry being judged.
 
     if policy is None:
         # REPL / unit tests sometimes call build_tool_registry without a

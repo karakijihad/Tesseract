@@ -330,12 +330,12 @@ def list_chats(
 
     Served from the derived index (``chat_index.headers``) first, so a listing
     costs one query rather than parsing every transcript in the library.
-    ``None`` means the index has nothing trustworthy to hand back yet — a
-    fresh install, a deleted sqlite file, or a table `chat_index` just
-    migrated out from under an old column set — so this rebuilds it from the
-    records ONCE and asks again; a second ``None`` (nothing on disk, or the
-    index genuinely unreachable) parses the records directly for this one
-    call, which is the only path left that opens a transcript.
+    ``headers`` reconciles itself against the files on disk before it hands
+    anything back — a fresh install, a deleted sqlite file, a stale row, a
+    file gone missing all resolve there, not here — so this needs no
+    rebuild-and-retry of its own. Only a genuinely unreachable index (``None``)
+    falls all the way back to parsing the records directly, which is the only
+    path left that opens a transcript.
 
     Every invariant the parse path held has to hold here too, because this
     replaced "parse every file" rather than adding a second listing:
@@ -358,9 +358,6 @@ def list_chats(
     to decide which conversations a connection hydrates.
     """
     rows = chat_index.headers(include_archived=include_archived, archived_only=archived_only)
-    if rows is None:
-        rebuild_metadata_index()
-        rows = chat_index.headers(include_archived=include_archived, archived_only=archived_only)
     if rows is None:
         rows = [
             _row_from_record(record)

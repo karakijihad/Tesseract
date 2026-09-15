@@ -22,6 +22,7 @@ Schema (one row per chat record)::
     snippet        TEXT               -- first operator line, present only while the title is unnamed
     last_active_at TEXT               -- when the chat was last actually used, not merely last written
     file_path      TEXT NOT NULL      -- absolute path on disk
+    file_stamp     TEXT               -- mtime_ns:size:ctime_ns when this row was written, for reconciliation
 
 A table opened with an older, narrower column set is not ALTERed: it is
 DROPped and recreated empty, because every value here is derived and the
@@ -66,7 +67,7 @@ logger = logging.getLogger(__name__)
 _SCHEMA_COLUMNS = frozenset({
     "chat_id", "title", "created_at", "started_at", "ended_at", "turn_count",
     "model", "archived", "message_count", "snippet", "last_active_at",
-    "file_path",
+    "file_path", "file_stamp",
 })
 
 
@@ -88,6 +89,20 @@ class ChatMetaRow:
     message_count: int = 0
     snippet: str = ""
     last_active_at: str | None = None
+    # A stamp of the record file's mtime_ns, size and ctime_ns the moment this
+    # row was written, so a reader can tell "still current" from "the file
+    # moved on" without a parse. mtime_ns alone is too weak: a timestamp-
+    # preserving restore (``shutil.copy2``, a backup tool) keeps the exact
+    # mtime of a file whose content changed underneath it. Size and ctime are
+    # the two other facts one ``stat()`` call already carries, so combining
+    # them costs nothing extra and catches what mtime alone would miss on its
+    # own — a content change that also happens to leave the size unchanged is
+    # the one case that still slips through, but that combination requires
+    # deliberately reconstructing an equal-length file with a different mtime
+    # or ctime, not an ordinary restore. Defaulted for the same reason as the
+    # three above: a caller that built a row before this field existed still
+    # constructs a valid one.
+    file_stamp: str = ""
 
 
 class ChatMetadataIndex:
@@ -154,7 +169,8 @@ class ChatMetadataIndex:
                 message_count  INTEGER NOT NULL DEFAULT 0,
                 snippet        TEXT NOT NULL DEFAULT '',
                 last_active_at TEXT,
-                file_path      TEXT NOT NULL
+                file_path      TEXT NOT NULL,
+                file_stamp     TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_chat_meta_created
                 ON chat_metadata(created_at DESC);
@@ -258,6 +274,22 @@ class ChatMetadataIndex:
         except sqlite3.OperationalError:
             return set()
 
+    def chat_stamps(self) -> dict[str, str]:
+        """Every id the index holds, with the file stamp its row was written
+        at. What ``headers()`` reconciles a fresh directory scan against: a
+        stem missing here, or whose stamp on disk no longer matches this one,
+        is stale and gets re-read; one that matches is trusted without a
+        parse."""
+        try:
+            return {
+                chat_id: file_stamp or ""
+                for chat_id, file_stamp in self._conn.execute(
+                    "SELECT chat_id, file_stamp FROM chat_metadata"
+                )
+            }
+        except sqlite3.OperationalError:
+            return {}
+
     def count(self) -> int:
         try:
             cursor = self._conn.execute("SELECT COUNT(*) FROM chat_metadata")
@@ -305,8 +337,8 @@ _UPSERT_SQL = """
     INSERT INTO chat_metadata
         (chat_id, title, created_at, started_at, ended_at,
          turn_count, model, archived, message_count, snippet,
-         last_active_at, file_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         last_active_at, file_path, file_stamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET
         title          = excluded.title,
         created_at     = excluded.created_at,
@@ -318,7 +350,8 @@ _UPSERT_SQL = """
         message_count  = excluded.message_count,
         snippet        = excluded.snippet,
         last_active_at = excluded.last_active_at,
-        file_path      = excluded.file_path
+        file_path      = excluded.file_path,
+        file_stamp     = excluded.file_stamp
 """
 
 
@@ -336,4 +369,5 @@ def _values(row: ChatMetaRow) -> tuple[Any, ...]:
         row.snippet or "",
         row.last_active_at,
         row.file_path,
+        row.file_stamp or "",
     )

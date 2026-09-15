@@ -86,10 +86,16 @@ class Step:
     `tool` is empty for a step the model takes without calling anything. A
     named tool is checked against the registry at boot, because a playbook
     whose step names a tool that is not there cannot run.
+
+    `unread` is every key the file wrote on this step that is neither `do`
+    nor `tool`. Parsing drops them, so without this record `tools: x` (the
+    plural a model writes) left a step naming no tool and nothing said so.
+    The contract reports each one as a blocking gap.
     """
 
     do: str
     tool: str = ""
+    unread: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -231,8 +237,17 @@ def _parse_steps(raw: Any) -> tuple[Step, ...]:
         elif isinstance(item, dict):
             do = _text(item.get("do"))
             if do:
-                steps.append(Step(do=do, tool=_step_tool(item.get("tool"))))
+                steps.append(Step(
+                    do=do,
+                    tool=_step_tool(item.get("tool")),
+                    unread=tuple(sorted(str(k) for k in item if k not in _STEP_KEYS)),
+                ))
     return tuple(steps)
+
+
+#: The two keys a step has. Anything else a file writes on a step is kept as
+#: `Step.unread` so the contract can say it was not read.
+_STEP_KEYS = frozenset({"do", "tool"})
 
 
 #: What a model writes for a step that calls nothing when it fills the field

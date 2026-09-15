@@ -13,8 +13,9 @@ helpers so this module stays import-safe in REPL / standalone contexts.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from tesseract.orchestrator.autonomy.models import AgendaItem
 
@@ -32,6 +33,8 @@ VALID_COMMENT_EVENT_TYPES = frozenset({"agenda_comment_added"})
 VALID_GOVERNOR_EVENT_TYPES = frozenset(
     {"governor_pause_added", "governor_pause_removed", "governor_tick"}
 )
+
+VALID_VERDICT_EVENT_TYPES = frozenset({"task_verdict_recorded"})
 
 
 def _load_mirror_helpers() -> tuple[Any, Any] | None:
@@ -95,6 +98,41 @@ async def broadcast_agenda_event(
                 "agenda broadcast: send_envelope failed for %s",
                 getattr(sess, "session_id", "?"),
             )
+
+
+def agenda_broadcast_hook(app: Any) -> Callable[[str, AgendaItem, Mapping[str, Any]], None]:
+    """Build the sync hook `AgendaStore.set_broadcast_hook` takes, closed over
+    one `app`.
+
+    Any `AgendaStore` instance can be wired to this factory: the kernel's own
+    store and the separate store `build_tool_registry` builds for
+    task_propose/task_work/task_close/agenda_comment both fan through it, so
+    a task closing on the second store reaches WS exactly like a kernel-
+    internal mutation on the first. They are different instances and neither
+    hook double-fires the other's events; route handlers keep their own
+    manual `broadcast_agenda_event` calls independent of this.
+
+    The store stays sync, so the hook resolves the running loop at fire time
+    (mutations happen on the event loop thread) and schedules the async
+    broadcast as a task. A loop that is stopping or closed at shutdown drops
+    the broadcast silently, matching the cost-ledger broadcast hook pattern.
+    """
+
+    def _hook(event_type: str, item: AgendaItem, extras: Mapping[str, Any]) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        prior_status = extras.get("prior_status") if extras else None
+        try:
+            loop.create_task(
+                broadcast_agenda_event(app, event_type, item, prior_status=prior_status),
+                name=f"agenda_broadcast:{event_type}:{item.id}",
+            )
+        except RuntimeError:
+            return
+
+    return _hook
 
 
 async def broadcast_agenda_comment_event(
@@ -174,5 +212,47 @@ async def broadcast_governor_event(
         except Exception:
             log.exception(
                 "governor broadcast: send_envelope failed for %s",
+                getattr(sess, "session_id", "?"),
+            )
+
+
+async def broadcast_verdict_event(
+    app: Any, task_id: str, verdict: str, by: str,
+) -> None:
+    """Fan the operator's one-key verdict out to every Mirror WS session.
+
+    Fired exactly once, from `verdicts.record_verdict`'s recorded-listener,
+    never from a route or bridge handler directly: a cockpit button, a
+    Telegram tap and a Telegram typed reply all call `record_verdict`, so
+    wiring the broadcast there is what makes every surface show the key
+    live without teaching any of them about WS. Never raises; `app` may
+    be None.
+    """
+    event_type = "task_verdict_recorded"
+    if event_type not in VALID_VERDICT_EVENT_TYPES:  # pragma: no cover - fixed literal
+        log.warning("verdict broadcast: unknown event_type %r", event_type)
+        return
+    if app is None or not hasattr(app, "get"):
+        return
+    sessions = app.get("server_sessions") or {}
+    if not sessions:
+        return
+    helpers = _load_mirror_helpers()
+    if helpers is None:
+        return
+    make_envelope, send_envelope = helpers
+    payload = {"task": task_id, "verdict": verdict, "by": by}
+    for sess in list(sessions.values()):
+        env = make_envelope(
+            event_type,
+            "agenda",
+            getattr(sess, "session_id", ""),
+            payload,
+        )
+        try:
+            await send_envelope(sess, env)
+        except Exception:
+            log.exception(
+                "verdict broadcast: send_envelope failed for %s",
                 getattr(sess, "session_id", "?"),
             )

@@ -13,7 +13,7 @@ import { CacheReport } from './conscience/CacheReport';
 import { DayPanel } from './conscience/DayPanel';
 import { DriftHistoryChart } from './conscience/DriftHistoryChart';
 import { PayloadBreakdown } from './conscience/PayloadBreakdown';
-import { PlaybookUsageChart } from './conscience/PlaybookUsageChart';
+import { PlaybookRoom } from './conscience/PlaybookRoom';
 import { ToolHeatmap } from './conscience/ToolHeatmap';
 import { ToolUsageChart } from './conscience/ToolUsageChart';
 import { WorkingSetPanel } from './conscience/WorkingSetPanel';
@@ -453,7 +453,7 @@ function PlaybookUsage() {
       title={null}
       meta="What it reached for, and how the work that followed went."
     >
-      <PlaybookUsageChart
+      <PlaybookRoom
         rows={usage.playbooks}
         days={usage.days}
         carriedCount={usage.carried_count}

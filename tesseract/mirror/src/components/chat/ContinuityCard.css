@@ -1,10 +1,17 @@
 /* The continuity package, drawn as a card. `--info` marks it as the runtime's
    own record rather than a caution or a failure (`--warn`/`--bad`), the same
-   ramp the soul's reflection cards use for the runtime speaking about itself. */
+   ramp the soul's reflection cards use for the runtime speaking about itself.
 
+   The border is `var(--stroke-1)` on all four sides, at `--radius-xs`, the
+   exact treatment `.tool-call-pill` (chat.css) uses for its own border, so a
+   boundary card and a tool chip read as the same kind of thing in the
+   transcript. The horizontal margin is `--space-14`, the same token
+   `.message-bubble` (chat.css) uses for its own left/right padding, so the
+   card sits at the inset a tool chip sits at inside an assistant bubble
+   rather than spanning the full chat column. */
 .continuity-card {
-  margin: var(--space-6) 0;
-  border-left: var(--stroke-2) solid var(--info);
+  margin: var(--space-6) var(--space-14);
+  border: var(--stroke-1) solid var(--info);
   background: var(--info-wash);
   border-radius: var(--radius-xs);
 }

@@ -44,12 +44,15 @@ import re
 import unicodedata
 
 
-def check(command: str) -> tuple[int, str] | None:
+def check(command: str, cwd: str | None = None) -> tuple[int, str] | None:
     """Run all 26 security checks. Returns (check_num, posture) on failure.
 
     ``posture`` is ``"blocked"`` for the 20 absolute DENY checks
     (1-7, 9, 11-14, 16, 19-23, 25, 26) and ``"ask"`` for the forced-ASK
     checks (10, 15, 17, 18, 24). Returns ``None`` when every check passes.
+
+    ``cwd`` is the folder the command runs in, when the caller knows it. Only
+    check 26 reads it: it is the one check that judges where a path lands.
 
     **Check 8 returns both**, and is the only one that does: ``eval`` /
     ``source`` / ``. script`` are ``"ask"``, while the ``printf '\\xNN' | sh``
@@ -67,7 +70,7 @@ def check(command: str) -> tuple[int, str] | None:
     """
     first_ask: tuple[int, str] | None = None
     for checker in _CHECKS:
-        result = checker(command)
+        result = _run(checker, command, cwd)
         if result is None:
             continue
         if result[1] == "blocked":
@@ -77,7 +80,7 @@ def check(command: str) -> tuple[int, str] | None:
     return first_ask
 
 
-def asks(command: str) -> tuple[int, ...]:
+def asks(command: str, cwd: str | None = None) -> tuple[int, ...]:
     """Every ask-check this command trips, in check order.
 
     `check()` answers ONE question and returns ONE result, which is the right
@@ -100,7 +103,7 @@ def asks(command: str) -> tuple[int, ...]:
     """
     fired: list[int] = []
     for checker in _CHECKS:
-        result = checker(command)
+        result = _run(checker, command, cwd)
         if result is None:
             continue
         if result[1] == "blocked":
@@ -460,7 +463,8 @@ def _check_25(cmd: str) -> tuple[int, str] | None:
 # them; a shell write into one is the assistant editing its own scorecard.
 # `_SEALED_DIRS` / `_SEALED_FILES` below are the list this spells out, and
 # `file_write._RECORD_LOCK_PREFIXES` is the same list for the file tools; a
-# test holds the three together.
+# test holds the three together. `workspace/` is sealed too, but NOT by this
+# pattern: see `_GOVERNED_DIRS`, which is matched only by where a path lands.
 _SEALED_SEGMENT_RE = re.compile(
     r"""(?:^|[\s"'=(;|&])(?:\./)?"""
     r"""(?:(app|runtime|agenda|logs/usage|logs/skills|logs/agents|logs/workspace)/"""
@@ -596,6 +600,20 @@ _SEALED_FILES: tuple[tuple[str, ...], ...] = (
     ("logs", "cost-tracking.jsonl"),
     ("projects", "registry.json"),
 )
+# Trees sealed from the shell that are NOT records: each has doors of its
+# own that check what goes in. The workspace documents are written through
+# the file tools' proposal path and the skills through `skill_create` and
+# `skill_refine`, so a shell write is the one way around all of those checks.
+# Kept out of `_SEALED_DIRS` because the file tools must stay open here: they
+# are one of the doors, and `file_write._RECORD_LOCK_PREFIXES` mirrors that
+# list.
+_GOVERNED_DIRS: tuple[tuple[str, ...], ...] = (
+    ("workspace",),
+)
+# Governed roots are left out ON PURPOSE. This set is how a relative path is
+# guessed at when nothing says where the command runs, and `workspace/` is a
+# common enough folder name that a guess would refuse another project's own.
+# With a known working folder a governed path is judged by where it lands.
 _SEALED_FIRST_COMPONENTS: frozenset[str] = frozenset(
     root[0] for root in (*_SEALED_DIRS, *_SEALED_FILES)
 )
@@ -616,7 +634,7 @@ def _sealed_root_paths() -> list[tuple[str, tuple[str, ...]]]:
         (str(runtime_dir()), ("runtime",)),
         (str(home), ()),
     ]
-    for root in (*_SEALED_DIRS, *_SEALED_FILES):
+    for root in (*_SEALED_DIRS, *_GOVERNED_DIRS, *_SEALED_FILES):
         if root in (("app",), ("runtime",)):
             continue
         out.append((str(home.joinpath(*root)), root))
@@ -657,13 +675,22 @@ def _walk(position: list[str], parts: list[str]) -> list[str] | None:
     return walked
 
 
-def _resolve(target: str, position: list[str] | None) -> list[str] | None:
+def _resolve(
+    target: str, position: list[str] | None, cwd: str | None = None,
+) -> list[str] | None:
     """Where `target` lands, as components under the install root.
 
     `position` is the modelled cwd (also install-root-relative), or None when
     the cwd is unknown. Returning components rather than a depth is what lets
     `cd ../app` be recognised as re-entering: a counter that bottoms out at the
     first `..` cannot see the rest of the path.
+
+    `cwd` is the absolute folder the command runs in, when the caller knows
+    it. A relative target is then joined to it and judged by where it lands,
+    which is the only way a governed root (`workspace/`) is ever found in a
+    relative path: `../workspace/x` from the workshop and `<home>/workspace/x`
+    spelled from the folder above both land there, and another project's own
+    `workspace/` does not.
     """
     t = _clean_token(target)
     if not t or t == "-" or t.startswith("~") or t.startswith("$"):
@@ -672,6 +699,8 @@ def _resolve(target: str, position: list[str] | None) -> list[str] | None:
         return _install_relative(t)
 
     parts = [p for p in t.split("/") if p and p != "."]
+    if position is None and cwd:
+        return _install_relative(_joined(cwd, t))
     if position is None:
         # An unknown cwd only becomes known when the path names a sealed tree
         # outright, or the parent of one — anything else could be anywhere.
@@ -685,7 +714,7 @@ def _is_sealed(position: list[str] | None) -> bool:
     if not position:
         return False
     lowered = tuple(p.lower() for p in position)
-    if any(lowered[: len(root)] == root for root in _SEALED_DIRS):
+    if any(lowered[: len(root)] == root for root in (*_SEALED_DIRS, *_GOVERNED_DIRS)):
         return True
     return lowered in _SEALED_FILES
 
@@ -775,7 +804,30 @@ def _write_targets(segment: str) -> list[str]:
     return targets
 
 
-def _check_26_after_cd(cmd: str, _depth: int = 0) -> tuple[int, str] | None:
+def _joined(cwd: str, relative: str) -> str:
+    """`relative` resolved against `cwd`, as a forward-slash absolute path,
+    which is the spelling `_install_relative` compares against."""
+    import posixpath
+
+    return posixpath.normpath(cwd.replace("\\", "/").rstrip("/") + "/" + relative)
+
+
+def _moved(here: str | None, destination: str) -> str | None:
+    """The absolute folder after `cd destination`, or None once it cannot be
+    followed: an expansion, a home tilde, or a relative move from nowhere."""
+    t = _clean_token(destination)
+    if not t or t == "-" or t.startswith("~") or t.startswith("$") or "%" in t:
+        return None
+    if _ABS_PATH_RE.match(t):
+        import posixpath
+
+        return posixpath.normpath(t)
+    return _joined(here, t) if here else None
+
+
+def _check_26_after_cd(
+    cmd: str, _depth: int = 0, cwd: str | None = None,
+) -> tuple[int, str] | None:
     """The `cd` half of check 26 — a write whose sealed-ness is positional.
 
     Once the shell has moved into `app/`, the command text carries no `app/`
@@ -788,16 +840,32 @@ def _check_26_after_cd(cmd: str, _depth: int = 0) -> tuple[int, str] | None:
     relatively. A relative target that climbs back out of the sealed tree is
     the operator's business and stays allowed; one that resolves inside it is
     denied, however it was written.
+
+    `cwd` is the folder the command runs in, when the caller knows it (the
+    `bash` tool always does). **What this has to hold at once**, and a later
+    change is checked against the whole list, not the case in front of it:
+
+    1. A write that lands in a sealed or governed root is refused once the
+       folder it runs from is known, however the path is spelled.
+    2. A write that lands anywhere else is not, including another project's
+       own folder that happens to be called `workspace/`.
+    3. Reads are never refused, from any folder.
+    4. With no folder given and no absolute `cd`, the answer is exactly what
+       it was before a folder could be given: records by their spelling,
+       governed roots only by an absolute path.
+    5. A `cd` moves the folder for every later segment, and one this cannot
+       follow (`$VAR`, `~`, `%VAR%`, `popd`) forgets it rather than guessing.
     """
     for inner in _NESTED_SHELL_RE.finditer(cmd):
         # `bash -c "cd app && …"` hides the move from a quoting-unaware split.
         # Bounded recursion — a nested shell inside a nested shell is still a
         # command string, and refusing to look would be the bypass.
         body = inner.group(1) or inner.group(2) or ""
-        if _depth < 3 and body and (hit := _check_26_after_cd(body, _depth + 1)):
+        if _depth < 3 and body and (hit := _check_26_after_cd(body, _depth + 1, cwd)):
             return hit
 
     position: list[str] | None = None
+    here = cwd.replace("\\", "/") if cwd else None
     for segment in _SEGMENT_SEP_RE.split(cmd):
         segment = segment.strip()
         if not segment:
@@ -807,11 +875,14 @@ def _check_26_after_cd(cmd: str, _depth: int = 0) -> tuple[int, str] | None:
             # The directory stack is not modelled; forget where we are rather
             # than assume we stayed.
             position = None
+            here = None
             continue
 
         cd_match = _CD_RE.match(segment) or _ENV_CHDIR_RE.match(segment)
         if cd_match:
-            position = _resolve(cd_match.group(1), position)
+            destination = cd_match.group(1)
+            position = _resolve(destination, position, here)
+            here = _moved(here, destination)
             # `env -C dir <cmd>` moves and runs in one segment, so the rest of
             # it still has to be judged.
             if _CD_RE.match(segment):
@@ -820,15 +891,15 @@ def _check_26_after_cd(cmd: str, _depth: int = 0) -> tuple[int, str] | None:
         # A known cwd is enough to judge a write by where it lands: the cwd
         # itself need not be sealed, because a root can sit one step below
         # it (`cd logs && echo > usage/tools.jsonl`).
-        if position is None:
+        if position is None and here is None:
             continue
         for target in _write_targets(segment):
-            if _is_sealed(_resolve(target, position)):
+            if _is_sealed(_resolve(target, position, here)):
                 return 26, "blocked"
     return None
 
 
-def _check_26(cmd: str) -> tuple[int, str] | None:
+def _check_26(cmd: str, cwd: str | None = None) -> tuple[int, str] | None:
     """Absolute DENY: write verbs targeting the sealed `app/` or `runtime/`.
 
     The write boundary in `path_validator` covers the file tools, but `bash`
@@ -900,13 +971,18 @@ def _check_26(cmd: str) -> tuple[int, str] | None:
             idx = lower.find(variant)
             if idx >= 0 and _blocked_at(idx):
                 return 26, "blocked"
-    return _check_26_after_cd(cmd)
+    return _check_26_after_cd(cmd, cwd=cwd)
 
 
 # Order is evaluation order; the numbers are labels, not positions. `_check_26`
 # runs ahead of `_check_24` deliberately: 24 forces ASK on recursive-destructive
 # verbs, so `rm -rf app/` would otherwise be one operator `y` away from deleting
 # the sealed tree. A DENY on the sealed trees outranks an ASK on the verb.
+def _run(checker, command: str, cwd: str | None) -> tuple[int, str] | None:
+    """One check, handed the working folder only if it is the one that reads it."""
+    return checker(command, cwd) if checker is _check_26 else checker(command)
+
+
 _CHECKS: list = [
     _check_01, _check_02, _check_03, _check_04, _check_05,
     _check_06, _check_07, _check_08, _check_09, _check_10,
@@ -962,7 +1038,7 @@ RULES: dict[int, tuple[str, str]] = {
     23: ("blocked", "Malformed-token injection through variable names"),
     24: ("ask", "Recursive-destructive verbs — rm -rf, del /s, git push --force"),
     25: ("blocked", "Writes to permissions.yaml, roles.yaml, providers.yaml or mirror.yaml"),
-    26: ("blocked", "Writes into the sealed app/ or runtime/ trees, or into the runtime's own records (agenda, usage and skill logs, workspace events, the ledger, the project registry), including after a cd into one"),
+    26: ("blocked", "Writes into the sealed app/ or runtime/ trees, into the runtime's own records (agenda, usage and skill logs, workspace events, the ledger, the project registry), or into workspace/, whose documents and skills have their own tools, including after a cd into one"),
 }
 
 #: Which forced-ASK checks may run with nobody watching, when the operator has

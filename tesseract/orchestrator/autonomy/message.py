@@ -275,6 +275,20 @@ def compose(category: str, context: dict[str, Any]) -> Message:
             payload=True,
         )
 
+    if category == "workspace_change_refused":
+        # What did not happen comes first: the operator's standing answer was
+        # "apply these on your own", so the news is that one did not apply.
+        return Message(
+            title="Not applied",
+            body=_lines(
+                "A change that was set to apply on its own could not be "
+                "applied, so it is waiting for you in the inbox.",
+                _text(context, "reason"),
+                "Approve it to try again, or reject it.",
+            ),
+            facts=_maybe(("Change", _text(context, "document"))),
+        )
+
     if category == "voice_lane_down":
         # The consequence first. "kokoro latched" says nothing to someone
         # holding a phone; "it cannot speak" is the thing that changed.

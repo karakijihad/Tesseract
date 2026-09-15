@@ -344,7 +344,12 @@ def unopenable(root: str | Path) -> str | None:
     let anything run in `app/` — it just moves the refusal to a lane open,
     minutes away from the click that chose the root, where it reads as a broken
     project rather than as an answer to what was asked.
+
+    Also refuses the app's own source tree, so the Settings panel answers with
+    a plain 4xx before a write ever reaches the store's own backstop
+    (`orchestrator/projects/own_tree.py::why_root_is_refused`).
     """
+    from tesseract.orchestrator.projects.own_tree import why_root_is_refused
     from tesseract.orchestrator.seal_guard import SealViolation, assert_cwd_outside_seal
 
     try:
@@ -356,4 +361,7 @@ def unopenable(root: str | Path) -> str | None:
         assert_cwd_outside_seal(root)
     except SealViolation as exc:
         return str(exc)
+    own_tree_refusal = why_root_is_refused(root)
+    if own_tree_refusal:
+        return own_tree_refusal
     return None

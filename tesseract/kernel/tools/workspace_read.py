@@ -185,13 +185,16 @@ class WorkspaceReadTool(Tool):
         except ValueError as exc:
             return ToolResult(output=f"workspace_read rejected: {exc}", is_error=True)
         if not path.is_file():
+            _record_skill_read(path, context, is_error=True)
             return ToolResult(
                 output=f"workspace_read: not found: {inp.path}", is_error=True
             )
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
+            _record_skill_read(path, context, is_error=True)
             return ToolResult(output=f"workspace_read: read error: {exc}", is_error=True)
+        _record_skill_read(path, context, is_error=False)
 
         lines = text.splitlines()
         total = len(lines)
@@ -212,6 +215,20 @@ class WorkspaceReadTool(Tool):
                 "line_end": end_idx,
             },
         )
+
+
+def _record_skill_read(path: Path, context: ToolContext, *, is_error: bool) -> None:
+    """One usage row when the file is a live skill's `SKILL.md`, the same row
+    `file_read` writes. The prompt tells the assistant to open a skill with
+    this tool, so a read here not being counted would leave `playbook_record`
+    and the carried list measuring nothing. Never raises: the record is not
+    worth failing a read over."""
+    try:
+        from tesseract.brain.skill_usage import maybe_log_skill_load
+
+        maybe_log_skill_load(path, getattr(context, "session_id", "") or "", is_error=is_error)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 __all__ = ["WorkspaceReadTool", "WorkspaceReadInput"]

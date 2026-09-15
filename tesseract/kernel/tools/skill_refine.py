@@ -122,7 +122,7 @@ class SkillRefineTool(Tool):
         "used."
     )
     not_when: ClassVar[str] = (
-        "to read a skill, use `file_read`; to find one, use `playbook_search`; "
+        "to read a skill, use `workspace_read`; to find one, use `playbook_search`; "
         "to create a new one, use `skill_create`. None of the four actions "
         "here apply themselves without the operator's policy allowing it, "
         "and `retire` never decides on its own account."

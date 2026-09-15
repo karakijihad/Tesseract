@@ -49,6 +49,41 @@ function payloadParts(stats: SessionStatsData) {
   return { total, lateBlock };
 }
 
+/** The two rows built from what the provider actually reported, each falling
+ * back to the structural estimate (`total` above) until its own call has
+ * happened. Kept apart from `payloadHint`'s breakdown rows on purpose: those
+ * are one moment's estimate of the NEXT request and always sum to `total`,
+ * while these come from actual past requests and can disagree with that
+ * estimate and with each other, so folding them into the same sum would
+ * claim an addition that is not true.
+ *
+ * `coldStart` is this conversation's first call since it began, or since a
+ * reset or a consolidation boundary last cleared it, and stays fixed once it
+ * lands. `latest` is whichever call is newest and moves every turn. Neither
+ * is a real row until SOME number exists to show, which is only when the
+ * fallback estimate itself is known.
+ */
+function measuredRequestRows(stats: SessionStatsData, total: number | undefined) {
+  const coldStart = stats.first_request_tokens;
+  const latest = stats.last_request_tokens;
+  return [
+    {
+      key: "cold_start",
+      cells: [
+        `payload at the start of this conversation, ${coldStart !== undefined ? "measured" : "estimate"}`,
+        formatMeasured(coldStart ?? total),
+      ],
+    },
+    {
+      key: "latest_request",
+      cells: [
+        latest !== undefined ? "the last request, measured" : "the next request, estimate",
+        formatMeasured(latest ?? total),
+      ],
+    },
+  ];
+}
+
 /** The parts of what a request sends, as one sentence and a row per part.
  *
  * `payload_tokens` (head plus the tool list) is the same word and the same
@@ -82,13 +117,16 @@ function payloadHint(stats: SessionStatsData, conversation: number) {
         ]
       : []),
     { key: "total", cells: ["next request in total", formatMeasured(total)] },
+    ...measuredRequestRows(stats, total),
   ];
   return (
     <>
       <p className="hud-stats-hint-lead">
         These are the parts of what every request sends: payload is the
         instructions, memory and tool list that go out before the
-        conversation, which comes on top of it.
+        conversation, which comes on top of it. The last two rows come from
+        what the provider actually reported for real requests, not this
+        estimate, so they do not always match it or each other.
       </p>
       <DataTable
         label="What this request sends, in parts"
@@ -158,13 +196,18 @@ export function StatsChip({ hintPosition = "top" }: StatsChipProps) {
     lateBlock !== undefined && lateBlock > 0
       ? `, plus a clock, memory summary and directives block of ${formatTokens(lateBlock)} this turn`
       : "";
+  const measuredRows = measuredRequestRows(stats, total);
+  const measuredSummary = measuredRows.length
+    ? " " + measuredRows.map((row) => `${row.cells[0]} ${row.cells[1]}`).join(", ") + "."
+    : "";
   const ariaSummary =
     `Turns ${stats.turns} · ${formatTokens(measured)} of ${formatTokens(threshold)}. ` +
     `Payload is instructions, memory and the tool list sent before the ` +
     `conversation, which comes on top of it: instructions and memory ` +
     `${formatMeasured(stats.system_tokens)}, tool list ${formatMeasured(stats.tools_tokens)}, ` +
     `payload ${formatMeasured(stats.payload_tokens)}, conversation ${formatTokens(measured)}` +
-    `${lateBlockPart}, next request in total ${formatMeasured(total)}.`;
+    `${lateBlockPart}, next request in total ${formatMeasured(total)}.` +
+    measuredSummary;
 
   return (
     <Hint label={payloadHint(stats, measured)} position={hintPosition} maxWidth={320}>

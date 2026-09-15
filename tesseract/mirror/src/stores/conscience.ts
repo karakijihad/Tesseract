@@ -81,11 +81,34 @@ export interface PlaybookRevisionRow {
   turn_cost_usd: number | null;
 }
 
+export interface PlaybookStep {
+  do: string;
+  /** "" for a step that calls no tool. */
+  tool: string;
+}
+
+/** What the playbook itself says, parsed from its file, so a surface can show
+ *  the procedure rather than the markdown it is written in. */
+export interface PlaybookProcedure {
+  /** Where it is kept, relative to the workspace. */
+  path: string;
+  trigger: string;
+  use_when: string;
+  not_when: string;
+  preconditions: string[];
+  steps: PlaybookStep[];
+  expected_result: string;
+  failure_modes: string[];
+  /** Why it cannot be used, or "" when nothing stops it. */
+  cannot_run: string;
+}
+
 export interface PlaybookUsageRow {
   playbook: string;
   description: string;
   version: string;
   status: string;
+  skill: PlaybookProcedure;
   /** Whether it arrives on every turn with its steps, or costs a
    *  `playbook_search` first. The dial this panel is read to set. */
   carried: boolean;

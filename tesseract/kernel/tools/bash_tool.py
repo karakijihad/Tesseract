@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import re
 
 from pydantic import BaseModel, Field
 
@@ -120,7 +121,9 @@ def _working_dir(inp: "BashInput", context: ToolContext) -> str:
     try:
         from tesseract.orchestrator.projects.store import ProjectStore
 
-        active = ProjectStore().active()
+        # A row naming the app's own code reads as no project open, so an old
+        # registration never makes it the folder a command runs in.
+        active = ProjectStore().active_usable()
     except Exception:  # noqa: BLE001 — a broken registry is not this tool's error
         # Said out loud. The fallback is right, and running somewhere the
         # caller did not expect with no trace is the failure this whole fix
@@ -139,6 +142,68 @@ def _working_dir(inp: "BashInput", context: ToolContext) -> str:
         return fallback
     assert_cwd_outside_seal(root)
     return str(root)
+
+
+# A command whose whole effect is printing the words it was given: `echo stop`,
+# `Write-Output "done"`. Measured: one chat spent sixteen calls on these, each a
+# note to itself, at a full prompt per round trip. Anything that could make
+# the print mean something (a redirect, a pipe, a second command, a variable,
+# a substitution, an escape) disqualifies it, so `echo x > f` and `echo $PATH`
+# still run.
+_PRINT_ONLY_RE = re.compile(
+    r"^\s*(?:echo|printf|write-output|write-host)(?:\s+(?P<words>.*))?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_MEANINGFUL_CHARS = frozenset("<>|&;$%`(){}\\\n\r")
+
+#: After this many in one turn the refusal also says to stop calling tools.
+_NO_OP_LIMIT = 3
+
+# session id -> (turn id, how many print-only commands that turn so far).
+_NO_OPS: dict[str, tuple[str, int]] = {}
+
+
+def _prints_only(command: str) -> bool:
+    match = _PRINT_ONLY_RE.match(command)
+    if match is None:
+        return False
+    return not (set(match.group("words") or "") & _MEANINGFUL_CHARS)
+
+
+def _refuse_if_it_does_nothing(command: str, context: ToolContext) -> ToolResult | None:
+    """A refusal for a print-only command, else None.
+
+    Refused without running, because running it produces only the text the
+    caller already wrote. The count is per turn, so the third one in a turn
+    says what the first two did not: stop and tell the operator.
+    """
+    # Keyed by run as well as session: every scheduled job shares the one
+    # session id "scheduler", and two of them running at once must not reset
+    # each other's count.
+    run = str(getattr(context, "run_id", "") or "")
+    key = f"{getattr(context, 'session_id', '') or ''}|{run}"
+    turn = str(getattr(context, "turn_id", "") or run)
+    if not _prints_only(command):
+        _NO_OPS.pop(key, None)
+        return None
+    last_turn, count = _NO_OPS.get(key, ("", 0))
+    count = count + 1 if last_turn == turn else 1
+    if len(_NO_OPS) > 256:
+        _NO_OPS.clear()
+    _NO_OPS[key] = (turn, count)
+    message = (
+        "Not run. This command only prints the words you gave it, so it "
+        "changes nothing and nobody reads it. If you meant to tell the "
+        "operator something, say it in your reply. If you meant to run a "
+        "command, run that command."
+    )
+    if count >= _NO_OP_LIMIT:
+        message += (
+            f" This is the {count}th command this turn that does nothing. "
+            "Stop calling tools and tell the operator in your reply where you "
+            "are stuck."
+        )
+    return ToolResult(output=message, is_error=True, caller_error=True)
 
 
 class BashTool(Tool):
@@ -210,9 +275,23 @@ class BashTool(Tool):
         )
         return security_ask_reason(inp.command)
 
+    def refuse_before_asking(self, tool_input: BaseModel, context: ToolContext) -> ToolResult | None:
+        inp = tool_input if isinstance(tool_input, BashInput) else BashInput(**tool_input.model_dump())
+        return _refuse_if_it_does_nothing(inp.command, context)
+
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
         inp = tool_input if isinstance(tool_input, BashInput) else BashInput(**tool_input.model_dump())
-        result = security_check(inp.command)
+        from tesseract.orchestrator.seal_guard import SealViolation
+
+        # Judged from the folder the command will run in, so a relative path
+        # is refused by where it lands rather than by how it is spelled. A
+        # folder that is itself refused leaves nothing to judge from; `run`
+        # refuses that call outright.
+        try:
+            where: str | None = _working_dir(inp, context)
+        except SealViolation:
+            where = None
+        result = security_check(inp.command, cwd=where)
         if result is not None:
             check_num, posture = result
             if posture == "ask":
@@ -220,7 +299,7 @@ class BashTool(Tool):
                 # Every check that fired, not just the reported one. What may
                 # run unattended is decided against all of them
                 # (`bash_security.asks`).
-                context.security_checks = security_asks(inp.command)
+                context.security_checks = security_asks(inp.command, cwd=where)
                 return PermissionResult.ASK
             logger.warning("Bash security check #%d blocked command", check_num)
             if check_num == 25:
@@ -246,10 +325,18 @@ class BashTool(Tool):
     async def run(self, tool_input: BaseModel, context: ToolContext) -> ToolResult:
         inp = tool_input if isinstance(tool_input, BashInput) else BashInput(**tool_input.model_dump())
 
-        # Security checks run again at execution time (defense in depth).
+        from tesseract.orchestrator.seal_guard import SealViolation
+
+        try:
+            where = _working_dir(inp, context)
+        except SealViolation as exc:
+            return ToolResult(output=f"bash: {exc}", is_error=True)
+
+        # Security checks run again at execution time (defense in depth),
+        # judged from the same folder `check_permissions` judged them from.
         # ASK-posture hits already cleared the operator-approval gate in
         # decide.evaluate; only "blocked" sentinels hard-fail here.
-        sec_result = security_check(inp.command)
+        sec_result = security_check(inp.command, cwd=where)
         if sec_result is not None:
             check_num, posture = sec_result
             if posture == "blocked":
@@ -257,13 +344,6 @@ class BashTool(Tool):
                     output=f"Command blocked by security check #{check_num}",
                     is_error=True,
                 )
-
-        from tesseract.orchestrator.seal_guard import SealViolation
-
-        try:
-            where = _working_dir(inp, context)
-        except SealViolation as exc:
-            return ToolResult(output=f"bash: {exc}", is_error=True)
 
         process: asyncio.subprocess.Process | None = None
         try:

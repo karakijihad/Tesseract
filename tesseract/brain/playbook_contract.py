@@ -110,9 +110,11 @@ def gaps_for_skill(
             blocking=True,
         ))
     for index, step in enumerate(entry.steps, start=1):
+        where = f"steps[{index}]"
+        for key in step.unread:
+            gaps.append(_gap(entry, where, _unread_step_key(key), blocking=True))
         if not step.tool:
             continue
-        where = f"steps[{index}]"
         if step.tool in forbidden:
             gaps.append(_gap(
                 entry, where,
@@ -183,9 +185,10 @@ def check_playbooks(
 ) -> list[PlaybookGap]:
     """Log every gap, blocking ones where the operator will see them.
 
-    Called once from `build_tool_registry`, beside the tool and card contracts,
-    because that is the assembly point every entry into the runtime goes
-    through. Returns what it logged so a caller can record it.
+    Called from `build_tool_registry`, and only when that build loads the
+    operator's own tools: a step naming one of those is a real step, and a
+    registry built without them, to read facts about tools, would report it as
+    missing. Returns what it logged so a caller can record it.
     """
     gaps = inspect_playbooks(skills_dir, tool_names=tool_names)
     for gap in gaps:
@@ -196,6 +199,14 @@ def check_playbooks(
         else:
             logger.info("playbook %s: %s %s", gap.name, gap.field, gap.detail)
     return gaps
+
+
+def _unread_step_key(key: str) -> str:
+    """Blocking, because a step whose tool sat under a key nothing reads runs
+    as a step that calls no tool, and the file gives no sign of it."""
+    if key == "tools":
+        return "declares `tools`, which a step does not read. Name the one tool this step uses with `tool:`"
+    return f"declares `{key}`, which a step does not read. A step has `do` and `tool` only"
 
 
 def _gap(entry: SkillEntry, field: str, detail: str, *, blocking: bool) -> PlaybookGap:

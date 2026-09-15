@@ -16,6 +16,31 @@ installed, you do not need it: the app offers you the update itself.
 
 ## Unreleased
 
+## 1.1.3
+
+Skills become one kind that is written, fixed and retired where you can see
+it, stopping or clearing a conversation keeps what matters, and everything the
+app records about itself now has a lifetime and a place you can read it.
+
+- **The Playbooks room is readable now.** Pick a playbook from the list and
+  you see, in plain sentences, what its numbers mean, a table of how each
+  version has done with a note on every column, and the playbook itself laid
+  out as steps rather than as its file.
+- **A skill opens on the first try.** The assistant was told to read skills
+  with a tool that could not reach them, so work that matched a skill started
+  with a few failed lookups. It now uses the right one, and you can see the
+  read in the conversation like any other tool call.
+- **A change set to apply on its own that could not be applied says why**,
+  on the card and in a message, instead of sitting in your inbox looking
+  like every other card waiting for an answer.
+- **A misspelled step in a skill is caught** instead of quietly leaving that
+  step without its tool.
+- **A shell command that writes into your workspace is refused**, the
+  documents and the skills alike, however the path is written. Those change
+  only through the tools that check them.
+- **The assistant stops talking to itself through the shell.** A command that
+  only prints words back is not run, and after three in one reply it is told
+  to stop and say where it is stuck.
 - **Skills and playbooks are the same thing now.** What used to be two kinds,
   one checked on the way in and one not, is one file with one contract,
   checked the same way whichever door it came through.

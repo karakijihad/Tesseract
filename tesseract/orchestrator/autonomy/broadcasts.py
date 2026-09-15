@@ -67,6 +67,15 @@ BROADCASTS: dict[str, Broadcast] = {
         ),
         producer="mirror/server/workspace_watch.py::_tell_them_it_applied",
     ),
+    "workspace_change_refused": Broadcast(
+        summary="A change set to apply on its own could not be applied, and here is why.",
+        why=(
+            "The card stays waiting with nothing on it to say it was tried. "
+            "Without this a change you expected to land simply never does, "
+            "and the reason exists only in a log file."
+        ),
+        producer="mirror/server/workspace_watch.py::_tell_them_it_was_refused",
+    ),
     "awaiting_operator": Broadcast(
         summary="Autonomy is waiting on a decision from you before it can continue.",
         why=(

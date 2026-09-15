@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 #: closing tool says the same thing at the other end; this says it while there
 #: is still time to name a project instead.
 _ON_YOUR_WORD = "Nothing will check it, so it closes on your word."
+#: A close runs only the checks the criteria names, so the project alone
+#: never decides; the sentence says which half does.
+_CHECKED_BY = (
+    "It belongs to {name}. The checks its success criteria names decide when "
+    "it is done, and a criteria that names none closes on your word."
+)
 
 
 def _verify_contract(project_id: str) -> str:
@@ -79,7 +85,16 @@ def _resolve_project_id(requested: str) -> tuple[str, str]:
 
     The second element is what to tell the caller, because a task that will
     close on a sentence should never be made silently.
+
+    `"none"`, case-folded and stripped, is the explicit sentinel for "no
+    project": it takes the same branch as an empty registry, never the active
+    project, so an operator with a project open can still say "none" and mean
+    it. A real project is never named "none"; nothing beyond the sentinel is
+    special-cased.
     """
+    if requested.strip().casefold() == "none":
+        return "", f"It belongs to no project. {_ON_YOUR_WORD}"
+    from tesseract.orchestrator.projects.own_tree import why_root_is_refused
     from tesseract.orchestrator.projects.store import ProjectStore
 
     store = ProjectStore()
@@ -90,13 +105,18 @@ def _resolve_project_id(requested: str) -> tuple[str, str]:
             active = store.active()
             if active is None:
                 return "", f"It belongs to no project. {_ON_YOUR_WORD}"
+            if why_root_is_refused(active.root):
+                return "", (
+                    f"It belongs to no project: the open one, {active.name}, is "
+                    f"the app's own code. {_ON_YOUR_WORD}"
+                )
             if active.verify.is_empty():
                 return "", (
                     f"It belongs to no project: {active.name} is the one open "
                     f"and it declares no checks. {_ON_YOUR_WORD} Name a "
                     f"project that declares checks to have them decide."
                 )
-            return active.id, f"{active.name}'s own checks decide when it is done."
+            return active.id, _CHECKED_BY.format(name=active.name)
     except Exception as exc:
         # A registry that cannot be read must not stop a task from being
         # made: a task with no project closes on the word and says so. A
@@ -115,9 +135,12 @@ def _resolve_project_id(requested: str) -> tuple[str, str]:
             f"There is no project {requested!r}. project_list names the "
             f"ones that exist; leave project_id empty for the active one."
         )
+    refused = why_root_is_refused(found.root)
+    if refused:
+        raise LookupError(f"{refused} Name another project, or none.")
     if found.verify.is_empty():
         return requested, f"{found.name} declares no checks. {_ON_YOUR_WORD}"
-    return requested, f"{found.name}'s own checks decide when it is done."
+    return requested, _CHECKED_BY.format(name=found.name)
 
 
 def _why_not_unattended(
@@ -194,10 +217,11 @@ class TaskProposeInput(BaseModel):
         default="",
         max_length=120,
         description=(
-            "The project this task belongs to, by its id from project_list. "
-            "Leave empty to take the project that is open, which happens only "
-            "when it declares checks. A task with a project that declares "
-            "checks is closed by them; every other task closes on your word."
+            "Name a project by its id from project_list, write none for no "
+            "project, or leave it empty to take the project that is open, "
+            "which happens only when it declares checks. A task closes by "
+            "the checks its criteria names, when the project declares them; "
+            "every other task closes on your word."
         ),
     )
     estimated_cost_usd: float | None = Field(

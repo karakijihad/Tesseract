@@ -8,8 +8,8 @@ call to get the same, plus the trigger, what must hold first, and where the
 body is. A playbook off the list is slower to reach and never unavailable.
 
 **This does not read the body, on purpose.** The result carries the contract
-and the path; the assistant then reads ``SKILL.md`` with ``file_read``, which
-is the act the usage log records (``brain/skill_usage.py``). Returning the
+and the path; the assistant then reads ``SKILL.md`` with ``workspace_read``,
+which is the act the usage log records (``brain/skill_usage.py``). Returning the
 body here would answer the question and lose the measurement in the same call,
 and the measurement is what says whether the carried list is set right.
 
@@ -68,7 +68,7 @@ class PlaybookSearchTool(Tool):
     )
     not_when: ClassVar[str] = (
         "a playbook already listed with its `use_when` is carried in full "
-        "this turn. Read its `SKILL.md` with `file_read` and skip this. Use "
+        "this turn. Read its `SKILL.md` with `workspace_read` and skip this. Use "
         "`tool_search` for a TOOL rather than a procedure."
     )
     depends_on: ClassVar[str] = ""

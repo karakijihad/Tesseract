@@ -592,6 +592,20 @@ class Tool(ABC):
     def is_read_only(self) -> bool:
         return False
 
+    def refuse_before_asking(
+        self, tool_input: BaseModel, context: ToolContext,
+    ) -> "ToolResult | None":
+        """A refusal for a call this tool already knows it will not run, or None.
+
+        Consulted by `permissions.decide.evaluate` ahead of `check_permissions`
+        and ahead of anyone being asked, so an operator is never prompted to
+        approve a call the tool then refuses. It can only refuse: `None` leaves
+        the call to the gate exactly as before. It is not a posture, which stays
+        `permissions.yaml`'s; it is the tool saying the input does nothing, the
+        way a validation error does.
+        """
+        return None
+
     def check_permissions(self, tool_input: BaseModel, context: ToolContext) -> PermissionResult:
         return PermissionResult.PASSTHROUGH
 

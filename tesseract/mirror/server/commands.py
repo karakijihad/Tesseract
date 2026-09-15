@@ -743,6 +743,39 @@ async def consolidate_in_place(
         # caller keeps the debt and the next turn tries again.
         return False
 
+    # The carried record's own title, promoted before it is the only message
+    # left. A boundary's continuation note is a `_runtime` message
+    # (`first_operator_text` skips it), so once `_wipe_in_place` clears this
+    # chat down to that one line, the rail's own fallback — the first thing
+    # the OPERATOR typed — has nothing left to read and the row falls back
+    # further still, to the date the chat was born on. Promoting what the rail
+    # was already showing into the persisted title, while the record just
+    # archived still has it, is what a plain `/reset clear` must not do: that
+    # path ends the conversation rather than carrying it, so nothing here
+    # widens it.
+    #
+    # Left alone once the operator has renamed a chat: `record.title` is only
+    # ever the birth stamp on a chat nobody has touched, so a rename is never
+    # this branch to overwrite.
+    if record is not None:
+        outgoing_meta = getattr(session, "chat_meta", {}).get(outgoing_id)
+        born = chat_store.default_chat_title(getattr(record, "created_at", "") or "")
+        if outgoing_meta is not None and born and getattr(record, "title", "") == born:
+            label = chat_store.first_operator_text(record)
+            if label:
+                outgoing_meta.title = label
+                # The same envelope `_handle_chat_rename` sends, so the rail
+                # picks up the new title the way it already knows how to:
+                # `chat_renamed` sets the live title and refetches the
+                # library. `session_reset`, sent below by `_wipe_in_place`,
+                # carries no title and the rail does not refetch on it, so
+                # without this the row would keep showing the birth stamp
+                # until something else happened to reload the list.
+                await send_envelope(session, make_envelope(
+                    "chat_renamed", "chat", session.session_id,
+                    {"chat_id": outgoing_id, "title": label},
+                ))
+
     if on_persisted is not None:
         # Fired here, at the point of no return, and its answer is not asked
         # for. It used to say whether this boundary MAY clear, which meant

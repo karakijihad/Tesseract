@@ -343,7 +343,7 @@ def _build_skills_block(root: Path) -> str:
 
       - `playbook_set.py::_BANNER`, written into the operator's `carried.txt`
       - `scheduler/tasks/working_set_review.py::_explain`, on the proposal card
-      - `views/conscience/PlaybookUsageChart.tsx`, its head and three strings
+      - `views/conscience/PlaybookRoom.tsx`, its detail head and list lines
       - `SECURITY.md`, which ships and regenerates `Guide/about/security.md`
       - `Docs/Logs/CODEMAP.md`
     """
@@ -361,7 +361,7 @@ def _build_skills_block(root: Path) -> str:
         f"You have {len(skills)} skill(s): procedures you (or a delegate) "
         "wrote down because the same job will come again. When a carried "
         "one's \"Use when\" matches the task in front of you, read its "
-        "`SKILL.md` with `file_read` and follow it step by step before "
+        "`SKILL.md` with `workspace_read` and follow it step by step before "
         "acting; don't guess behavior from the name alone. If following one "
         "goes wrong, call `skill_refine` with action report; if you find one "
         "wrong or incomplete, call `skill_refine` with action revise. One "

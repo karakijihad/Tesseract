@@ -170,6 +170,12 @@ def iter_history_files() -> Iterator[Path]:
     The stem is a uuid4, so that order carries no chronology — a caller that
     wants newest-first sorts the records it loads, it does not read the name.
 
+    Admits only a stem that passes ``is_valid_chat_id`` — the same predicate
+    ``read_record`` already refuses on. ``atomic_write_text`` drops its temp
+    file (``<random>.json``) in this same directory during every write, so an
+    unfiltered glob can catch one mid-save; a stray file dropped in by hand
+    is refused the same way.
+
     For consumers that want the files rather than parsed records — the
     work-index backfill is the one — so the directory keeps a single owner
     instead of growing a walk per caller.
@@ -177,7 +183,9 @@ def iter_history_files() -> Iterator[Path]:
     directory = chats_dir()
     if not directory.exists():
         return
-    yield from sorted(directory.glob("*.json"))
+    for path in sorted(directory.glob("*.json")):
+        if is_valid_chat_id(path.stem):
+            yield path
 
 
 def read_record(chat_id: str) -> ChatRecord | None:

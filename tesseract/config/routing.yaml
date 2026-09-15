@@ -63,3 +63,7 @@ routes:
   # `permissions.yaml` still ask before changing; this is what the others
   # send afterwards instead. Set it to [] to read them in the app only.
   workspace_change_applied: [telegram]
+
+  # A change set to apply on its own was refused when it came to apply, so it
+  # is still waiting for you. Says why, so you can approve, reject or ask again.
+  workspace_change_refused: [telegram]

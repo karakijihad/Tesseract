@@ -392,6 +392,17 @@ _ANCHOR_STRIDE = 32
 # channels, sub-agents) while staying a fixed, small cost.
 _TAIL_CACHE_MAX = 128
 
+# Same bound, same reason, for the per-lane tool-name snapshot below: one
+# adapter instance outlives every conversation, so the map needs a ceiling or
+# it grows for the life of the process.
+_TOOL_NAMES_CACHE_MAX = 128
+
+# How many changed names one log line names before it stops listing them and
+# says how many more there were. A working-set promotion or an MCP server
+# reconnect can move dozens of tools at once, and a log line is meant to be
+# read, not paged through.
+_TOOL_CHANGE_LOG_CAP = 20
+
 
 def _breakpoint_blocks(item: dict[str, Any]) -> list[dict[str, Any]] | None:
     """The block list a breakpoint may hang on, or None if this item is not a
@@ -549,6 +560,75 @@ def _breakpoints_at(items: list[dict[str, Any]]) -> list[int]:
     return out
 
 
+def _flat_tool_names(tools: list[dict[str, Any]]) -> frozenset[str]:
+    """Every tool name a request actually offers the model, flattened past
+    the namespace wrapper.
+
+    A `namespace` entry (`_namespace_entries`) is one item in `tools` but
+    stands for however many deferred tools it groups, so diffing the wire
+    array by its own top-level names would call a namespace's membership
+    change invisible: exactly the "62 -> 63 with no line explaining it" case
+    the tail cache log could not account for, a single working-set tool
+    moving in or out of a namespace's `tools` list.
+    """
+    names: set[str] = set()
+    for entry in tools:
+        if entry.get("type") == "namespace":
+            for member in entry.get("tools") or ():
+                member_name = member.get("name")
+                if member_name:
+                    names.add(member_name)
+        else:
+            name = entry.get("name")
+            if name:
+                names.add(name)
+    return frozenset(names)
+
+
+def _capped_names(names: list[str]) -> str:
+    if not names:
+        return "-"
+    if len(names) <= _TOOL_CHANGE_LOG_CAP:
+        return ",".join(names)
+    shown = names[:_TOOL_CHANGE_LOG_CAP]
+    return "{},+{} more".format(",".join(shown), len(names) - _TOOL_CHANGE_LOG_CAP)
+
+
+def _log_tool_change(
+    cache_key: str,
+    tools: list[dict[str, Any]],
+    tool_names_cache: "OrderedDict[str, frozenset[str]]",
+) -> None:
+    """One INFO line when the tool roster for this cache lane differs from
+    the last request on it, naming what changed.
+
+    The tail-mark cache above answers WHERE two requests stop matching; this
+    answers WHY, for the one cause that is invisible in the item list itself
+    (`tools` sits beside `input` in the request, not inside it): the tools
+    array changed shape and the cached prefix, which was written against the
+    old array, no longer matches from that point on. Silent when the roster
+    is unchanged, because a line that fires every turn is a line nobody reads.
+    """
+    if not cache_key:
+        return
+    names = _flat_tool_names(tools)
+    prev = tool_names_cache.get(cache_key)
+    if prev is not None and prev != names:
+        added = sorted(names - prev)
+        removed = sorted(prev - names)
+        logger.info(
+            "openai: tool list changed for key=%s: added=%s removed=%s "
+            "(cached prefix will be re-read from here)",
+            cache_key,
+            _capped_names(added),
+            _capped_names(removed),
+        )
+    tool_names_cache[cache_key] = names
+    tool_names_cache.move_to_end(cache_key)
+    while len(tool_names_cache) > _TOOL_NAMES_CACHE_MAX:
+        tool_names_cache.popitem(last=False)
+
+
 def _digest(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
 
@@ -667,6 +747,11 @@ class OpenAIAdapter(ModelAdapter):
         # asyncio only switches coroutines at an `await`, so one call runs to
         # completion before another can touch it — no lock needed.
         self._tail_cache: "OrderedDict[str, tuple[int, str]]" = OrderedDict()
+        # Per-lane tool-name snapshot, so a request can tell whether the
+        # roster it is about to send differs from the one the previous
+        # request on this lane sent (see `_log_tool_change`). Same lifetime
+        # and bound reasoning as `_tail_cache` above.
+        self._tool_names_cache: "OrderedDict[str, frozenset[str]]" = OrderedDict()
 
     async def stream(
         self,
@@ -991,6 +1076,7 @@ class OpenAIAdapter(ModelAdapter):
         projected = self.project_tools(tools)
         if projected:
             kwargs["tools"] = build_tools_array(projected)
+        _log_tool_change(cache_key, kwargs.get("tools") or [], self._tool_names_cache)
         if opts.reasoning_effort:
             kwargs["reasoning"] = {"effort": opts.reasoning_effort}
             # Only ask for encrypted reasoning when the model will actually generate some.

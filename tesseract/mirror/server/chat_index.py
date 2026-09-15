@@ -23,6 +23,7 @@ action against the index is the second owner this module exists to prevent.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -32,7 +33,7 @@ from typing import Any, TypeVar
 from tesseract.mirror.server import chat_record
 from tesseract.mirror.server.chat_record import (
     ChatRecord,
-    chat_path,
+    chats_dir,
     default_chat_title,
     iter_history_files,
 )
@@ -45,49 +46,124 @@ _T = TypeVar("_T")
 #: An index connection held open across a burst of writes — see ``index_batch``.
 _batch = threading.local()
 
-#: Stems `headers()` has confirmed are excluded (a channel record), keyed by
-#: stem, value is the file's mtime at the moment of confirmation. A channel
-#: stem is never indexed, so it is in `missing` on every single call, and
-#: without this it would be re-parsed forever — the exact cost the repair
-#: loop otherwise pays once per unreadable file. Process-local, so a restart
-#: re-confirms once; guarded by a lock since `headers()` can run on more than
-#: one worker thread. Invariants this cache must hold at once: (1) a channel
-#: record never reaches any listing/index row through this path, (2) files
-#: stay canonical, this only remembers a verdict already read from one, (3)
-#: unreadable-file settling and ghost pruning are untouched by it, (4) it
-#: cannot grow past the stems presently on disk, so a deleted principal's
-#: entry is dropped rather than retained forever, (5) it changes no I/O
-#: shape, so it adds no blocking work to the event loop.
-_excluded_stems: dict[str, int] = {}
+#: Sentinel returned by ``_with_index`` calls in ``headers()`` to tell
+#: "index unreachable" apart from "index reachable and genuinely handed back
+#: an empty result" — the two used to collapse onto the same ``None`` a
+#: caller could not tell apart, which was defect 1: an empty index parsed
+#: every file twice on every single listing.
+_UNREACHABLE = object()
+
+#: Paths `headers()` has confirmed are excluded (a channel record), keyed by
+#: the record's file path as a string, value is the file's stamp (see
+#: `_file_stamp`) at the moment of confirmation. A channel stem is never
+#: indexed, so it would otherwise be re-parsed forever — the exact cost the
+#: repair loop otherwise pays once per unreadable file. Process-local, so a
+#: restart re-confirms once; guarded by a lock since `headers()` can run on
+#: more than one worker thread. Invariants this cache must hold at once: (1)
+#: a channel record never reaches any listing/index row through this path,
+#: (2) files stay canonical, this only remembers a verdict already read from
+#: one, (3) unreadable-file settling and ghost pruning are untouched by it,
+#: (4) it cannot grow past the paths presently on disk, so a deleted
+#: principal's entry is dropped rather than retained forever, (5) it changes
+#: no I/O shape, so it adds no blocking work to the event loop, (6) it is
+#: keyed by the full file path rather than the bare stem, so a chat id reused
+#: under a different ``TESSERACT_HOME`` (two installs, or two homes in one
+#: test process) never inherits a verdict that was read from a different
+#: file.
+_excluded_stems: dict[str, str] = {}
 _excluded_lock = threading.Lock()
 
 
-def _confirmed_excluded(stem: str, mtime_ns: int) -> bool:
+def _confirmed_excluded(path: Path, stamp: str) -> bool:
     with _excluded_lock:
-        return _excluded_stems.get(stem) == mtime_ns
+        return _excluded_stems.get(str(path)) == stamp
 
 
-def _mark_excluded(stem: str, mtime_ns: int) -> None:
+def _mark_excluded(path: Path, stamp: str) -> None:
     with _excluded_lock:
-        _excluded_stems[stem] = mtime_ns
+        _excluded_stems[str(path)] = stamp
 
 
-def _clear_excluded(stem: str) -> None:
+def _clear_excluded(path: Path) -> None:
     with _excluded_lock:
-        _excluded_stems.pop(stem, None)
+        _excluded_stems.pop(str(path), None)
 
 
-def _prune_excluded(on_disk: set[str]) -> None:
-    """Drop cache entries for stems no longer on disk.
+def _prune_excluded(on_disk_paths: set[str]) -> None:
+    """Drop cache entries for paths no longer on disk.
 
     Called with the same directory listing `headers()` already took, so this
     costs no extra walk. Keeps the cache bounded by what exists rather than
     by how many principals ever have.
     """
     with _excluded_lock:
-        stale = [stem for stem in _excluded_stems if stem not in on_disk]
-        for stem in stale:
-            del _excluded_stems[stem]
+        stale = [key for key in _excluded_stems if key not in on_disk_paths]
+        for key in stale:
+            del _excluded_stems[key]
+
+
+def _file_stamp(stat_result: os.stat_result) -> str:
+    """One freshness marker from one ``stat()``: mtime_ns, size and ctime_ns.
+
+    mtime_ns alone is too weak — a timestamp-preserving restore
+    (``shutil.copy2``, a backup tool) keeps the exact mtime of a file whose
+    content changed underneath it. Size and ctime are the two other facts the
+    same ``stat()`` call already carries, so folding them in costs nothing
+    extra: on POSIX ctime moves on any metadata write including a bare
+    ``utime``; on Windows ``st_ctime`` is creation time, which a replace or a
+    copy changes but an in-place content edit or a restored mtime does not,
+    so size is what catches that case there. Verified on this machine:
+    ``os.scandir``'s ``DirEntry.stat()`` and ``Path.stat()`` return identical
+    ``st_mtime_ns``/``st_size``/``st_ctime_ns`` for the same file, so either
+    stat call may feed this and the write-through path and a scan agree.
+
+    Accepted limit: on Windows, an edit made outside the app that keeps the
+    file's exact size and then restores its mtime leaves this stamp unchanged,
+    and the stale row stays until the record's next real write. Every runtime
+    writer goes through ``atomic_write_text``, which always moves the mtime,
+    and closing the gap would mean reading every file on every listing, which
+    is the cost this index exists to avoid.
+    """
+    return f"{stat_result.st_mtime_ns}:{stat_result.st_size}:{stat_result.st_ctime_ns}"
+
+
+def _scan_chat_files() -> dict[str, tuple[Path, str]]:
+    """Every chat record stem on disk, each with its file's stamp, in one walk.
+
+    ``os.scandir`` rather than a glob plus a separate ``stat`` per file: on
+    Windows the directory enumeration already carries the file metadata, so
+    ``DirEntry.stat()`` costs no extra syscall. That is what makes checking
+    every file's stamp on every listing (steady state aside, where none of
+    this triggers a parse) affordable — the same tree `iter_history_files()`
+    walks, but with the one extra fact `headers()` needs from it.
+
+    Admits only an entry whose stem passes ``chat_record.is_valid_chat_id`` —
+    the same predicate `iter_history_files()` filters by, so the two walkers
+    of this directory agree. ``atomic_write_text`` drops its temp file
+    (``<random>.json``) in this same directory during every write; without
+    the filter a listing concurrent with a save could pick it up as a stem
+    with no record behind it.
+    """
+    found: dict[str, tuple[Path, str]] = {}
+    try:
+        scanner = os.scandir(chats_dir())
+    except OSError:
+        return found
+    with scanner:
+        for entry in scanner:
+            if not entry.name.endswith(".json"):
+                continue
+            stem = entry.name[:-5]
+            if not chat_record.is_valid_chat_id(stem):
+                continue
+            try:
+                if not entry.is_file():
+                    continue
+                stamp = _file_stamp(entry.stat())
+            except OSError:
+                continue
+            found[stem] = (Path(entry.path), stamp)
+    return found
 
 
 def metadata_index_path() -> Path:
@@ -176,7 +252,7 @@ def index_batch():
             pass
 
 
-def _meta_row(record: ChatRecord, path: Path) -> Any:
+def _meta_row(record: ChatRecord, path: Path, stamp: str) -> Any:
     """The row one record writes through as. The only place this is built,
     so the write-through path (``upsert``) and the rebuild path
     (``_rows_from_disk``) can never compute ``message_count``/``snippet``/
@@ -190,6 +266,11 @@ def _meta_row(record: ChatRecord, path: Path) -> Any:
     imports this module at load time, so importing it back at module scope
     here would be circular; by the time anything calls this function
     ``chat_store`` is already fully loaded.
+
+    ``stamp`` is the caller's, never re-stat here: whoever is writing this
+    row already knows which stamp it is current as of (a fresh write, or a
+    directory scan `headers()` just took), and a second stat could read a
+    file that moved on in between.
     """
     from tesseract.memory.chat_metadata import ChatMetaRow
     from tesseract.mirror.server.chat_store import first_operator_text, _last_active_stamp
@@ -208,6 +289,7 @@ def _meta_row(record: ChatRecord, path: Path) -> Any:
         snippet=first_operator_text(record) if record.title == born else "",
         last_active_at=_last_active_stamp(record),
         file_path=str(path),
+        file_stamp=stamp,
     )
 
 
@@ -227,16 +309,27 @@ def _in_the_library(record: ChatRecord) -> bool:
     return record.surface not in NOT_IN_THE_LIBRARY
 
 
-def upsert(record: ChatRecord, path: Path) -> None:
+def upsert(record: ChatRecord, path: Path, *, stamp: str | None = None) -> None:
     """Write one record's header through to the index. Best-effort.
 
     Refuses a record outside the library even if a future caller forgets the
     check ``save_chat`` already makes before calling this — one enforcement
     point rather than one per caller.
+
+    ``stamp`` is optional so the ordinary write-through path (``save_chat``,
+    right after ``write_record``) need not know about reconciliation at all:
+    left unset, this stats the file itself. A caller that already knows the
+    stamp — ``headers()``'s repair loop, mid directory-scan — passes it, so
+    the file is not stat'd twice.
     """
     if not _in_the_library(record):
         return
-    _with_index(lambda index: index.upsert(_meta_row(record, path)), None)
+    if stamp is None:
+        try:
+            stamp = _file_stamp(path.stat())
+        except OSError:
+            stamp = ""
+    _with_index(lambda index: index.upsert(_meta_row(record, path, stamp)), None)
 
 
 def forget(chat_id: str) -> None:
@@ -262,7 +355,11 @@ def _rows_from_disk() -> tuple[list[Any], int]:
             continue
         if not _in_the_library(record):
             continue
-        rows.append(_meta_row(record, path))
+        try:
+            stamp = _file_stamp(path.stat())
+        except OSError:
+            stamp = ""
+        rows.append(_meta_row(record, path, stamp))
     return rows, unreadable
 
 
@@ -279,26 +376,50 @@ def rebuild_metadata_index() -> int:
 def headers(
     *, include_archived: bool, archived_only: bool
 ) -> list[dict[str, Any]] | None:
-    """One row per chat from the index, or ``None`` to read the records.
+    """One row per chat from the index, reconciled against the files, or
+    ``None`` when the index cannot be reached at all.
 
-    ``None`` when the index is unreachable, empty, or short of the records on
-    disk. That last check is what makes the fast path safe to trust: nothing
-    rebuilds this index on a schedule, so a row that never arrived — a burst
-    left uncommitted by a kill, a file dropped in by hand — would hide a
-    conversation from the drawer indefinitely, and a fallback on an EMPTY
-    result cannot see a listing that is merely short. Counting the files is a
-    directory listing; the parse is what the index exists to avoid.
+    Invariants this function holds AT ONCE — a change here is checked
+    against every one of them, not just the finding that prompted it:
 
-    A shortfall is REPAIRED rather than merely detected. The first version fell
-    back forever, and a single unparseable file — which no rebuild can turn
-    into a row — left the drawer parsing every transcript on every open, with
-    a warning line and no way back. So a mismatch reconciles by id and asks
-    what it could actually see: when the index then holds every record that
-    exists, the remaining difference is unreadable files, and the index is as
-    complete as anything can make it.
+    1. Files are canonical. A row only ever mirrors what a record's stamp
+       (mtime_ns, size, ctime_ns — see ``_file_stamp``) says about it right
+       now; the index is never the thing trusted over the file it was built
+       from. mtime_ns alone is too weak a freshness marker — a
+       timestamp-preserving restore keeps a stale row's exact mtime — so the
+       stamp folds in size and ctime, taken from the same ``stat()`` call the
+       scan already pays for.
+    2. A channel record never becomes a row, whichever path found it — a
+       write, a repair, or this reconciliation.
+    3. In steady state — every file on disk indexed at the stamp it
+       currently has — a call costs one query and zero transcript parses.
+    4. A stem that is new, whose file's stamp has moved since its row was
+       written, or that has no row at all is read and reconciled. A file
+       that still will not parse settles at one failed parse per call,
+       never a re-read of the whole corpus.
+    5. The exclusion cache remembers a verdict per resolved file path, never
+       per bare chat id, so it cannot leak a verdict across a
+       ``TESSERACT_HOME`` change that happens to reuse an id.
+    6. "The index cannot be reached" (no usable connection, this call or the
+       last) degrades to ``None`` so the caller parses the records itself.
+       "The index opened fine and has nothing in it yet" — a fresh install, a
+       library that is nothing but channel records — is a DIFFERENT state: it
+       reconciles from the files on disk and returns real rows, possibly
+       ``[]``, and is never confused with the first for that reason: an empty
+       result used to fall back exactly like an unreachable one, and a
+       channel-only library parsed its files twice on every listing to
+       relearn nothing.
+    7. Archived filtering and the row's 11 keys are unchanged by any of this.
+    8. The exclusion cache is bounded by what is presently on disk.
+    9. Only a stem that passes ``chat_record.is_valid_chat_id`` is ever
+       admitted by the directory scan — the same predicate
+       ``iter_history_files()`` filters by — so a temp file
+       ``atomic_write_text`` drops mid-save, or any other non-chat-id
+       ``*.json`` in the directory, is never read and never logged as
+       unreadable.
     """
-    def _read(index: Any) -> tuple[set[str], list[dict[str, Any]]]:
-        return index.chat_ids(), index.list_headers(
+    def _read(index: Any) -> tuple[dict[str, str], list[dict[str, Any]]]:
+        return index.chat_stamps(), index.list_headers(
             include_archived=include_archived, archived_only=archived_only
         )
 
@@ -307,60 +428,59 @@ def headers(
             include_archived=include_archived, archived_only=archived_only
         )
 
-    indexed, rows = _with_index(_read, (set(), []))
-    if not indexed:
+    outcome = _with_index(_read, _UNREACHABLE)
+    if outcome is _UNREACHABLE:
         return None
-    on_disk = {path.stem for path in iter_history_files()}
-    _prune_excluded(on_disk)
+    existing, rows = outcome
 
-    ghosts = indexed - on_disk
-    if ghosts:
-        _with_index(lambda index: [index.delete(cid) for cid in ghosts], None)
+    on_disk = _scan_chat_files()
+    _prune_excluded({str(path) for path, _stamp in on_disk.values()})
 
-    missing = on_disk - indexed
-    if not ghosts and not missing:
+    ghosts = existing.keys() - on_disk.keys()
+
+    # Only a stem that is new, or whose file has moved on since its row was
+    # written, needs a read — the whole point of the index is to not parse
+    # the corpus on every listing. A confirmed-excluded stem (a channel
+    # record, most often) whose stamp has not moved needs neither.
+    to_check: list[tuple[str, Path, str]] = []
+    for stem, (path, stamp) in on_disk.items():
+        if existing.get(stem) == stamp:
+            continue
+        if _confirmed_excluded(path, stamp):
+            continue
+        to_check.append((stem, path, stamp))
+
+    if not ghosts and not to_check:
         return rows
 
-    # Repair only what is missing, never the whole corpus — the whole point of
-    # the index is not to parse the corpus. A stem that STILL will not parse is
-    # not a record anybody could have written a row for, so it stays absent and
-    # this settles: the next call re-attempts one failed json parse rather than
-    # re-reading every transcript.
-    #
-    # A channel record settles the OTHER way: it parses fine, every single
-    # call, and is never indexed, so it stays in `missing` forever. Re-parsing
-    # it on every listing would be the one-file cost `headers` already accepts
-    # for a file that will not parse at all, paid instead on every call by
-    # however many channel principals the bridge has. `_excluded_stems`
-    # remembers the verdict once it is confirmed and skips the parse until the
-    # file's mtime moves, which is the only event that can change the verdict.
-    repaired = 0
-    excluded = 0
-    for stem in missing:
-        path = chat_path(stem)
-        try:
-            mtime_ns = path.stat().st_mtime_ns
-        except OSError:
-            mtime_ns = None
-        if mtime_ns is not None and _confirmed_excluded(stem, mtime_ns):
-            excluded += 1
-            continue
-        record = chat_record.read_record(stem)
-        if record is None:
-            continue
-        if not _in_the_library(record):
-            excluded += 1
-            if mtime_ns is not None:
-                _mark_excluded(stem, mtime_ns)
-            continue
-        _clear_excluded(stem)
-        upsert(record, path)
-        repaired += 1
-    if repaired + excluded < len(missing):
+    # Bulk reconciliation shares one connection and one transaction — the
+    # cost of opening one is the WAL pragma and the schema check on every
+    # single row otherwise, exactly the shape `index_batch` exists to avoid.
+    unreadable = 0
+    with index_batch():
+        for chat_id in ghosts:
+            forget(chat_id)
+        for stem, path, stamp in to_check:
+            record = chat_record.read_record(stem)
+            if record is None:
+                # Not a record anybody could have written a row for. It
+                # stays absent and this settles: the next call re-attempts
+                # one failed parse, never the whole corpus.
+                unreadable += 1
+                continue
+            if not _in_the_library(record):
+                _mark_excluded(path, stamp)
+                continue
+            _clear_excluded(path)
+            upsert(record, path, stamp=stamp)
+        # Read back inside the same held connection, before the batch
+        # commits — sqlite sees a transaction's own uncommitted writes on
+        # the connection that made them, so this needs no second open.
+        rows = _with_index(_headers, rows)
+
+    if unreadable:
         logger.warning(
             "chat_metadata: %d chat record(s) could not be read and are absent "
-            "from the drawer", len(missing) - repaired - excluded,
+            "from the drawer", unreadable,
         )
-    if not repaired and not ghosts:
-        return rows
-    return _with_index(_headers, None)
+    return rows

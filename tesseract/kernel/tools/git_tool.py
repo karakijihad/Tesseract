@@ -263,6 +263,14 @@ class GitTool(Tool):
                     "no repo given and no active project to infer one from. "
                     "Pass repo, or open a project with project_open."
                 )
+            # An old registration can still name the app's own code as the
+            # open project. Git never runs there because of it; the sentence
+            # says why rather than pretending no project is open.
+            from tesseract.orchestrator.projects.own_tree import why_root_is_refused
+
+            refused = why_root_is_refused(active.root)
+            if refused:
+                raise ValueError(f"{refused} Pass repo, or open another project.")
             root = Path(active.root)
 
         if not root.is_dir():

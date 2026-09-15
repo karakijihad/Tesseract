@@ -426,7 +426,7 @@ workspace_documents:
 # `auto` means the runtime approves it itself, through the same path your
 # Approve button uses, and files the card as applied with its evidence rather
 # than making it vanish. It then tells you. It never means the card is
-# skipped. The four below always wait for you whatever the mode says.
+# skipped. The ones below always wait for you whatever the mode says.
 workspace_cards:
   proposal:
     max: ask
@@ -448,6 +448,9 @@ workspace_cards:
       feedback_sweep: ask
       # Your verdict on a skill, never the mode's.
       skill_retirement: ask
+      # Which tools every turn carries. A change moves what every request
+      # costs, so it waits for you.
+      working_set_proposal: ask
 
 # ─────────────────────────────────────────────────────────────────────────
 # Read-only self-verification allowlist. `PermissionPolicy._bash_readonly_posture`

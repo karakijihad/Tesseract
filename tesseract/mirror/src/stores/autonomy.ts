@@ -833,9 +833,27 @@ export const useAutonomyStore = create<AutonomyState>((set, get) => ({
     }
     switch (env.type) {
       case 'agenda_item_added':
-      case 'agenda_item_transitioned':
       case 'agenda_item_updated': {
         void get().fetchAgenda();
+        return;
+      }
+      case 'agenda_item_transitioned': {
+        void get().fetchAgenda();
+        // Only a task reaching done or failed changes "Finished today", so
+        // the Day room is read again for that and not for every tick of
+        // autonomy's own items.
+        const moved = env.data as { source?: unknown; status?: unknown };
+        if (moved?.source === 'task' && (moved.status === 'done' || moved.status === 'failed')) {
+          void get().fetchDay();
+        }
+        return;
+      }
+      case 'task_verdict_recorded': {
+        // The operator's one key (good/bad/not used), from any surface:
+        // cockpit button, Telegram tap, Telegram typed reply. Refetch the
+        // day so it shows live with no reload, same as the recording
+        // surface's own optimistic refetch after its own POST.
+        void get().fetchDay();
         return;
       }
       case 'agenda_comment_added': {

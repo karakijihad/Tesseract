@@ -307,7 +307,13 @@ climb out of the workspace is refused.
 **`workspace/skills/` can be read but never written, in any mode.**
 `file_write`, `file_copy` and `file_move` are all refused there too, the same
 as the six documents above, because a file written there directly would skip
-the checks a skill has to pass. A skill is written only through
+the checks a skill has to pass. A shell command the assistant runs is refused
+when it writes into `workspace/`, the six documents and the skills alike, in
+every mode, because a shell write skips the proposal and the checks together;
+reading stays open. Where a path lands is judged from the folder the command
+actually runs in, so `../workspace/` is caught and another project's own
+`workspace/` folder is not. Like every shell check it reads the command's
+text, so a program writing through its own file functions is not caught. A skill is written only through
 `skill_create` and changed only through `skill_refine`; both scan it, check
 its contract and file a card before anything lands.
 
@@ -571,7 +577,11 @@ These rules sit underneath the policy and are not reachable from it:
   revision is applied unattended (`revise`, `revert`) while the verdict to
   stop using a skill entirely is not.
   `context_set` rewrites which model each job runs on and how every open
-  conversation folds, which is the wiring rather than the work.
+  conversation folds, which is the wiring rather than the work. A
+  `working_set_proposal` card, which changes which tools are described on
+  every turn, is held at `ask` in `free` too: it grants nothing, but it
+  changes what every request carries and so what every turn costs, and it
+  comes up rarely enough that asking costs you little.
   `project_budget` is the ceiling on what a day of unattended work on one
   project may spend: an assistant that could raise it is an assistant with no
   ceiling, so the number is always yours. There is a second ceiling above it
@@ -622,6 +632,15 @@ These rules sit underneath the policy and are not reachable from it:
   folder on purpose and being relocated without being told would be worse. If
   no folder outside the sealed tree can be used at all, the app declines to
   start the tool rather than picking one for you.
+- **The app is never one of its own projects.** A project's folder cannot be
+  the app's own code, a folder inside it, or a folder that contains it, and
+  that is refused when a project is added and when one is opened, from the
+  assistant and from Settings alike. Your workshop folder is the one exception.
+  Without this, a task filed under the app's own code would be judged by the
+  app's development tests, which say nothing about your work and can run for
+  as long as the check is allowed to. When a task closes, only the checks its
+  success criteria names are run, so a task is never judged by checks it did
+  not ask for.
 - **The scheduled work the app ships is the app's.** You can turn any of it
   off, and you can move any job that runs at a set time of day to an hour that
   suits you. What each job does, and how often it runs, comes with the app:

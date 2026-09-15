@@ -1,6 +1,6 @@
 [project]
 name = "tesseract"
-version = "1.1.2"
+version = "1.1.3"
 description = "TESSERACT kernel — local-first AI entity runtime"
 # Declared here as well as in the repo-root LICENSE, because they are read by
 # different things: GitHub and humans read the file, while pip, SBOM tools and

@@ -234,6 +234,16 @@ async def evaluate(
     # (`Tool.redacted_input_fields`); a tool that declares none is unchanged.
     summary = approval_log.redacted_summary(tool, raw_input)
 
+    # A call the tool can already say it will not run is answered before
+    # anything is asked, so nobody is prompted to approve a call that is then
+    # refused. It only ever refuses: `None` goes on to the gate unchanged.
+    # Read with `getattr` because test doubles stand in for tools without
+    # subclassing `Tool`; every real tool inherits the method.
+    refuse = getattr(tool, "refuse_before_asking", None)
+    refused = refuse(validated, context) if refuse is not None else None
+    if refused is not None:
+        return refused
+
     decision = tool.check_permissions(validated, context)
     # Read and cleared in one breath. `bash_tool` and `command_run` write this
     # on their way to ASK; every other tool leaves whatever the last call put

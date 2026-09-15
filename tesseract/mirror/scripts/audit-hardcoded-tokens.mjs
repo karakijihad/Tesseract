@@ -744,6 +744,11 @@ const ROW_CLASSES = {
   // columns, which is the half a shared row shape cannot decide for a surface:
   // this one leads with a clock and the door the turn came through.
   'day-turn': 'Row',
+  // One playbook in the Playbooks room's list: a name and how often it was
+  // read. Selecting it shows its record and its steps beside the list, so the
+  // row is a list item that marks which one is open, not a card or a line
+  // that expands under itself.
+  'playbook-room__item': 'Row',
 };
 
 const CLICKABLE_TAG_RE =

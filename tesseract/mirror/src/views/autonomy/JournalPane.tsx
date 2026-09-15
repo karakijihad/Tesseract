@@ -8,7 +8,11 @@
 // a category rather than describing the machine.
 
 import { Note } from '../../components/common/Note';
-import type { OperatorJournalRow, ReturnNoteResponse } from '../../lib/api';
+import type {
+  OperatorJournalRow,
+  ReturnNoteResponse,
+  ReturnNoteSection,
+} from '../../lib/api';
 import { Markdown } from '../../components/common/Markdown';
 import { Band, StateStrip, type StateLine } from '../../components/common/StateStrip';
 import { useAutonomyStore, type AutonomyLevel } from '../../stores/autonomy';
@@ -74,6 +78,25 @@ function toLine(
   };
 }
 
+// The head sentence is the note's first line, read rather than composed again
+// from `since`, so the panel cannot word the absence differently.
+function noteHead(text: string): string {
+  return text.split('\n', 1)[0];
+}
+
+// A line carries no severity and no name of its own: the Band above already
+// names the section, so the row is the fact and the record it came from.
+function sectionLine(section: ReturnNoteSection, index: number): StateLine {
+  const line = section.lines[index];
+  return {
+    key: `${section.title}:${index}:${line.record}`,
+    state: 'idle',
+    name: '',
+    said: line.text,
+    value: line.record,
+  };
+}
+
 export function JournalPane({
   rows,
   status,
@@ -126,10 +149,29 @@ export function JournalPane({
       {note?.text ? (
         // The same text the brief carries and the tool returns, rendered
         // rather than restated: a second reader over these records would be
-        // a second answer to what happened while nobody was watching.
+        // a second answer to what happened while nobody was watching. Every
+        // other room on this panel draws a reading as a band of state lines,
+        // not as prose, so a note with sections draws the same way: the head
+        // sentence plain, then one band per section. A backend that has not
+        // grown `sections` yet still gets its text, through the render every
+        // room used before this one had rows to draw.
         <>
           <Band label="While you were away" />
-          <Markdown>{note.text}</Markdown>
+          {note.sections === undefined ? (
+            <Markdown>{note.text}</Markdown>
+          ) : (
+            <>
+              <p className="t-meta">{noteHead(note.text)}</p>
+              {note.sections.map((section) => (
+                <div key={section.title} className="autonomy-group">
+                  <Band label={section.title} count={section.lines.length} />
+                  <StateStrip
+                    lines={section.lines.map((_line, index) => sectionLine(section, index))}
+                  />
+                </div>
+              ))}
+            </>
+          )}
         </>
       ) : null}
       {rows.length > 0 ? (

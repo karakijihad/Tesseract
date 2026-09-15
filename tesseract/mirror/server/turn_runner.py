@@ -749,6 +749,18 @@ async def emit_stats(
                     # carries and which was missing from the HUD's "next
                     # request in total" row entirely.
                     "rest_tokens",
+                    # What the provider actually reported, not the structural
+                    # estimate the fields above are. `first_request_tokens` is
+                    # this conversation's cold start and stays fixed until a
+                    # reset or a consolidation boundary clears the history it
+                    # is read off; `last_request_tokens` is whichever call is
+                    # newest and moves every turn. Both absent until their
+                    # call has happened, which is why this is a `for key in`
+                    # filter rather than a bare key: an envelope carrying
+                    # neither reports exactly what it did before this field
+                    # existed.
+                    "first_request_tokens",
+                    "last_request_tokens",
                 )
                 if key in report
             },

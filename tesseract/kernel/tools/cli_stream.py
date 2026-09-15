@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Mapping, Sequence, TypedDict
+from typing import Any, Awaitable, Coroutine, Mapping, Sequence, TypedDict
 
 from tesseract.kernel.tools import _process_containment as containment
 from tesseract.kernel.tools.base import CliSink, ToolResult
@@ -76,12 +76,16 @@ async def emit_cli_event(
     `shielded` is for the terminal event: it is emitted from a `finally`
     whose usual trigger is a cancellation, and an unshielded await there
     would be cancelled before the sink saw it — leaving the card open,
-    which is the bug the finally exists to close."""
+    which is the bug the finally exists to close. The shielded branch goes
+    through `_shield_cleanup` (see invariant 8 above `_reap_all`), the same
+    module-level strong reference the post-spawn cleanup uses, so a SECOND
+    cancellation landing on this await cannot let the emit be garbage
+    collected out from under it."""
     if sink is None:
         return
     try:
         call = sink(event, call_id, payload)
-        await (asyncio.shield(asyncio.ensure_future(call)) if shielded else call)
+        await (asyncio.shield(_shield_cleanup(call)) if shielded else call)
     except Exception:  # noqa: BLE001 — the operator's view is never load-bearing
         log.debug("cli sink %s failed", event, exc_info=True)
     except asyncio.CancelledError:
@@ -138,7 +142,11 @@ def _strip_control_sequences(text: str) -> str:
 #    first, before the tasks that fed it are torn down.
 # 2. No orphaned tasks (stdout/stderr drain, pump, wait, watch) survive.
 # 3. `cli_end` is emitted exactly once on every exit of the sink variant,
-#    carrying the right exit code.
+#    carrying the right exit code — PRE-spawn exits included: the
+#    `cli_start`-cancellation handler and the `FileNotFoundError`/`OSError`
+#    spawn-failure handlers all emit `cli_end` through `emit_cli_event(...,
+#    shielded=True)`, which routes through the same `_shield_cleanup` as
+#    property 8 below, not a bare `asyncio.shield`.
 # 4. A cancellation cannot interrupt the reap into an unbounded/hung state
 #    (`containment.reap` carries its own timeout; cancelling and gathering
 #    an already-finished task is a no-op) — but a cancellation landing
@@ -153,6 +161,25 @@ def _strip_control_sequences(text: str) -> str:
 #    unchanged.
 # 7. The watcher (`cancel_event`) is never load-bearing: a call with none
 #    takes the same path through the same `finally`.
+# 8. `asyncio.shield` on a bare coroutine wraps it in an inner Task that the
+#    event loop itself holds only a WEAK reference to (CPython's own
+#    `asyncio.shield` docstring); nothing else keeps that inner task alive.
+#    A SECOND cancellation landing on the `await asyncio.shield(...)` tears
+#    down the caller's frame, and if that was the only strong reference,
+#    garbage collection (an explicit `gc.collect()`, or the interpreter's
+#    cycle collector at shutdown) can collect the still-running cleanup or
+#    leave it destroyed pending — the reap, and the sink variant's
+#    `cli_end`, then never finish. `_shield_cleanup` is what keeps property
+#    4 true under that: it wraps the cleanup coroutine in a Task held in the
+#    module-level `_pending_cleanup_tasks` set BEFORE the task ever reaches
+#    `asyncio.shield`, and the task discards itself via its own done
+#    callback the moment it finishes. The set is the strong reference
+#    `asyncio.shield` does not provide; `shield` still does only what it
+#    always did, protect the awaiting caller, never the shielded work.
+#    `emit_cli_event`'s own shielded branch goes through `_shield_cleanup`
+#    too, so every PRE-spawn shielded `cli_end` (the `cli_start`-cancellation
+#    handler, the spawn-failure handlers) is covered by the same mechanism
+#    as the post-spawn `_finish` reap+emit, not a separate weaker one.
 async def _reap_all(
     process: asyncio.subprocess.Process, tasks: Sequence[asyncio.Task | None]
 ) -> None:
@@ -168,6 +195,26 @@ async def _reap_all(
         t.cancel()
     if live:
         await asyncio.gather(*live, return_exceptions=True)
+
+
+# Strong references for cleanup tasks in flight under `asyncio.shield` (see
+# invariant 8 above `_reap_all`). Each task removes itself the moment it
+# finishes; a non-empty set at rest means a leak.
+_pending_cleanup_tasks: set[asyncio.Task[None]] = set()
+
+
+def _shield_cleanup(
+    coro: Coroutine[Any, Any, None] | Awaitable[None],
+) -> asyncio.Task[None]:
+    """Wrap a cancellation-cleanup coroutine in a Task the module keeps a
+    strong reference to, so `await asyncio.shield(_shield_cleanup(...))`
+    survives a second cancellation. See invariant 8 above `_reap_all`. Used
+    for both the post-spawn reap+emit (`_finish`) and every shielded
+    `emit_cli_event` call, pre-spawn exits included."""
+    task = asyncio.ensure_future(coro)
+    _pending_cleanup_tasks.add(task)
+    task.add_done_callback(_pending_cleanup_tasks.discard)
+    return task
 
 
 async def race_communicate(
@@ -247,7 +294,7 @@ async def race_communicate(
             pass
         return bytes(out_buf), bytes(err_buf)
     finally:
-        await asyncio.shield(_reap_all(process, tasks))
+        await asyncio.shield(_shield_cleanup(_reap_all(process, tasks)))
 
 
 async def run_subprocess_with_sink(
@@ -298,10 +345,13 @@ async def run_subprocess_with_sink(
             env=dict(env) if env is not None else None,
         )
     except FileNotFoundError:
-        await _emit("cli_end", {"exit_code": -1})
+        await _emit("cli_end", {"exit_code": -1}, shielded=True)
         return ToolResult(output=missing_message, is_error=True)
     except OSError as e:
-        await _emit("cli_end", {"exit_code": -1})
+        await _emit("cli_end", {"exit_code": -1}, shielded=True)
+        return ToolResult(output=f"{tool_name} failed to start: {e}", is_error=True)
+    except Exception as e:  # noqa: BLE001 - a bad argument (a NUL byte) is ValueError, and the card must still close
+        await _emit("cli_end", {"exit_code": -1}, shielded=True)
         return ToolResult(output=f"{tool_name} failed to start: {e}", is_error=True)
 
     assert process.stdout is not None
@@ -426,4 +476,4 @@ async def run_subprocess_with_sink(
 
         return ToolResult(output=out, metadata={"tool": tool_name, "exit_code": 0})
     finally:
-        await asyncio.shield(_finish())
+        await asyncio.shield(_shield_cleanup(_finish()))

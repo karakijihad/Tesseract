@@ -26,7 +26,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from tesseract.brain.playbook_contract import version_number
+from tesseract.brain.playbook_contract import blocking_gaps, version_number
 from tesseract.brain.playbook_reuse import Reuse, TurnFact, measure_all, worse_than
 from tesseract.brain.playbook_set import CARRIED_FILENAME, load_carried_names
 from tesseract.brain.skills import load_skills
@@ -64,6 +64,9 @@ def records(skills_dir: Path, *, window_days: int) -> list[dict[str, Any]]:
     """
     entries = [e for e in load_skills(skills_dir) if e.status != "retired"]
     carried = load_carried_names(skills_dir / CARRIED_FILENAME)
+    # No registry here, so a step naming a tool that does not exist is not
+    # judged; every other reason a playbook cannot run is.
+    cannot_run = blocking_gaps(entries)
     by_name = measure_all(
         [e.name for e in entries], window_days=window_days, with_cost=True
     )
@@ -84,6 +87,7 @@ def records(skills_dir: Path, *, window_days: int) -> list[dict[str, Any]]:
             "status": entry.status,
             "carried": entry.name in carried,
             "revisions": revisions,
+            "skill": _the_procedure(entry, cannot_run.get(entry.name)),
         }
         for key in _SUMS:
             row[key] = sum(int(r[key]) for r in revisions)
@@ -96,6 +100,22 @@ def records(skills_dir: Path, *, window_days: int) -> list[dict[str, Any]]:
     # of this surface uses and for the same reason.
     rows.sort(key=lambda r: (-int(r["loads"]), str(r["playbook"])))
     return rows
+
+
+def _the_procedure(entry: Any, gap: Any) -> dict[str, Any]:
+    """What the playbook itself says, parsed, for a surface that shows the
+    procedure rather than the markdown it is written in."""
+    return {
+        "path": f"skills/{entry.dirname}/SKILL.md",
+        "trigger": entry.trigger,
+        "use_when": entry.use_when,
+        "not_when": entry.not_when,
+        "preconditions": list(entry.preconditions),
+        "steps": [{"do": step.do, "tool": step.tool} for step in entry.steps],
+        "expected_result": entry.expected_result,
+        "failure_modes": list(entry.failure_modes),
+        "cannot_run": f"{gap.field} {gap.detail}" if gap is not None else "",
+    }
 
 
 _NO_COMPARISON: dict[str, Any] = {

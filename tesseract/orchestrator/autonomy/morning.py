@@ -779,6 +779,16 @@ def why_a_step_is_refused(
             f"it and {project.name} declares none, so nothing would run and it "
             "would close on your own word"
         )
+    # The other half of the same rule: a project that declares checks, and a
+    # criteria naming none of them, also runs nothing, because a close runs
+    # only the checks its criteria names.
+    declared = set(declared_checks(project))
+    if declared and not checks_named(criteria) & declared:
+        return (
+            f"{project.name} declares a {', '.join(sorted(declared))} check and "
+            "the criteria names none of them, so nothing would run and it "
+            "would close on your own word"
+        )
     return ""
 
 

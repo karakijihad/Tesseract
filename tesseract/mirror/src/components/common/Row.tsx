@@ -18,6 +18,10 @@ interface RowProps {
   ariaLabel?: string;
   /** For a row that opens a detail under itself rather than navigating. */
   ariaExpanded?: boolean;
+  /** For a row in a list whose selection is shown beside it: the one whose
+   *  detail is open. Announced as the current item, and the surface styles
+   *  `[aria-current="true"]` so the look and the announcement cannot differ. */
+  current?: boolean;
   testId?: string;
 }
 
@@ -43,6 +47,7 @@ export function Row({
   className,
   ariaLabel,
   ariaExpanded,
+  current,
   testId,
 }: RowProps) {
   const Tag = as;
@@ -60,6 +65,7 @@ export function Row({
       aria-disabled={disabled || undefined}
       aria-label={ariaLabel}
       aria-expanded={ariaExpanded}
+      aria-current={current ? "true" : undefined}
       className={`row${className ? ` ${className}` : ""}`}
       onClick={disabled ? undefined : onClick}
       onKeyDown={activate}

@@ -173,6 +173,22 @@ def _annotation(name: str, facts: dict[str, tuple[str, str]]) -> str:
     return f"  # {summary}" if summary else ""
 
 
+def targets() -> list[Path]:
+    """The live file, and the shipping copy when there is one.
+
+    The shipping copy is what a new install receives: the same kind of file
+    with a different choice of names. Its groupings and descriptions are the
+    same facts about the same tools, so the one script writes both, and a tool
+    renamed or added cannot leave the shipped copy describing a registry that
+    is no longer there.
+    """
+    from tesseract.scripts.make_shipping_config import SHIPPING_DIR_NAME
+
+    live = config_path()
+    shipped = live.parent / SHIPPING_DIR_NAME / live.name
+    return [live, shipped] if shipped.is_file() else [live]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="rewrite the file")
@@ -181,25 +197,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    path = config_path()
-    wanted = render(_current_core(path), _registry_facts())
+    facts = _registry_facts()
+    paths = targets()
 
-    if args.check:
+    if not (args.check or args.write):
+        sys.stdout.write(render(_current_core(paths[0]), facts))
+        return 0
+
+    drift = 0
+    for path in paths:
+        wanted = render(_current_core(path), facts)
+        if args.write:
+            path.write_text(wanted, encoding="utf-8")
+            print(f"  wrote {path}")
+            continue
         current = path.read_text(encoding="utf-8") if path.is_file() else ""
         if current == wanted:
             print(f"[ok] {path}")
-            return 0
+            continue
         print(f"[drift] {path} is not what the registry would write")
         print("       run: python -m tesseract.scripts.generate_working_set --write")
-        return 1
-
-    if not args.write:
-        sys.stdout.write(wanted)
-        return 0
-
-    path.write_text(wanted, encoding="utf-8")
-    print(f"  wrote {path}")
-    return 0
+        drift = 1
+    return drift
 
 
 if __name__ == "__main__":

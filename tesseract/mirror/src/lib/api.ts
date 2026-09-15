@@ -1925,12 +1925,30 @@ export async function fetchOperatorJournal(
   );
 }
 
+// One fact the note carries, and the record it came from. Matches
+// `orchestrator/brief/return_note.py::Line`.
+export interface ReturnNoteLine {
+  text: string;
+  record: string;
+}
+
+// One group of facts, under the title the backend gave it (`Shipped`,
+// `Tried and could not`, and so on).
+export interface ReturnNoteSection {
+  title: string;
+  lines: ReturnNoteLine[];
+}
+
 // What changed since the operator was last here. The same text the brief
 // carries and the tool returns, because one question gets one answer.
+// `sections` is the same answer, structured for a panel to draw rather than
+// parse back out of `text`; it is optional so a backend from before this
+// field still resolves to a valid response.
 export interface ReturnNoteResponse {
   since: string | null;
   owed: boolean;
   text: string;
+  sections?: ReturnNoteSection[];
 }
 
 export async function fetchReturnNote(): Promise<ReturnNoteResponse> {

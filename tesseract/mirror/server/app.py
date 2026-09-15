@@ -2597,7 +2597,10 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         )
         await kernel.start()
         app["autonomy_kernel"] = kernel
-        from tesseract.orchestrator.autonomy.broadcast import broadcast_agenda_event
+        from tesseract.orchestrator.autonomy.broadcast import (
+            agenda_broadcast_hook,
+            broadcast_verdict_event,
+        )
         from tesseract.orchestrator.autonomy.publishers import set_active_bus
         set_active_bus(kernel.bus)
 
@@ -2605,26 +2608,43 @@ async def _start_autonomy_kernel(app: web.Application) -> None:
         # / add inside the kernel tick (selection, completion, repair) was
         # previously invisible to the operator until they refreshed manually.
         # Route handlers keep their own manual broadcast calls (different
-        # AgendaStore instance), so this hook does not double-fire.
-        def _agenda_broadcast_hook(event_type, item, extras):
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return  # no running loop → no WS broadcast possible
-            prior_status = extras.get("prior_status") if extras else None
-            try:
-                loop.create_task(
-                    broadcast_agenda_event(
-                        app, event_type, item, prior_status=prior_status
-                    ),
-                    name=f"agenda_broadcast:{event_type}:{item.id}",
-                )
-            except RuntimeError:
-                # Loop is stopping/closed during shutdown — drop the broadcast
-                # silently. Matches the cost-ledger broadcast hook pattern.
-                return
+        # AgendaStore instance), so this hook does not double-fire. The
+        # factory in broadcast.py is the same one `build_tool_registry` wires
+        # onto its own AgendaStore for task_propose/task_work/task_close.
+        kernel._agenda.set_broadcast_hook(agenda_broadcast_hook(app))
 
-        kernel._agenda.set_broadcast_hook(_agenda_broadcast_hook)
+        # A key (good/bad/not used) reaches the cockpit live from wherever it
+        # was pressed: a cockpit button, a Telegram tap and a Telegram typed
+        # reply all call `verdicts.record_verdict`, the one write every
+        # surface shares, so wiring the broadcast at that one choke point
+        # covers all three without teaching any surface about WS.
+        #
+        # Registered here, inside the running loop, because `record_verdict`
+        # runs off it (`asyncio.to_thread` from the REST route and from the
+        # Telegram bridge) and has no loop of its own to ask when it fires;
+        # the loop is captured now and the broadcast is handed back to it
+        # with `call_soon_threadsafe`. A closed loop at shutdown drops the
+        # broadcast silently, same as every other broadcast hook here.
+        from tesseract.orchestrator.autonomy import verdicts
+
+        _verdict_loop = asyncio.get_running_loop()
+
+        def _on_verdict_recorded(task_id: str, verdict: str, by: str) -> None:
+            def _fire() -> None:
+                try:
+                    _verdict_loop.create_task(
+                        broadcast_verdict_event(app, task_id, verdict, by),
+                        name=f"verdict_broadcast:{task_id}",
+                    )
+                except RuntimeError:
+                    return  # loop stopping/closed — drop silently
+
+            try:
+                _verdict_loop.call_soon_threadsafe(_fire)
+            except RuntimeError:
+                return  # loop already closed
+
+        verdicts.set_recorded_listener(_on_verdict_recorded)
 
         # Fan worker_record_* envelopes from every write_record /
         # archive_record callsite (kernel, governor, cancel, recovery,

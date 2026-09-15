@@ -1,12 +1,13 @@
-"""task_close: end a task with the evidence, and the project's own checks decide.
+"""task_close: end a task with the evidence, and the checks the criteria names decide.
 
 `done` is a claim with evidence behind it, and `failed` is a reason. When the
-task belongs to a project that declares verify steps, those steps are the
-evidence: the gate runs them through the same permission path as any other
-command, and what it found is what lands in `verification`. The assistant's
-closing sentence is recorded as the claim, never as the proof. A task with no
-project, or a project with nothing declared, closes on the sentence and says
-so, so a reader can tell the two apart.
+task's success criteria names a check the project declares, that check is the
+evidence: the gate runs it through the same permission path as any other
+command, and what it found is what lands in `verification`. A criteria that
+names no check the project declares runs nothing, and the assistant's closing
+sentence is recorded as the claim, never as the proof. A task with no project,
+a project with nothing declared, or criteria naming none of what it declares,
+all close on the sentence and say so, so a reader can tell the two apart.
 
 **A declared failure runs the gate too.** It used to be the one ungated exit:
 say `failed` and no command ever ran, so every failure reached the learners as
@@ -50,7 +51,7 @@ from tesseract.orchestrator.autonomy.models import (
     UnexplainedFailure,
     UnverifiedDone,
 )
-from tesseract.orchestrator.projects.models import Project
+from tesseract.orchestrator.projects.models import Project, VerifyCommands
 from tesseract.orchestrator.verify.models import GateResult
 
 logger = logging.getLogger(__name__)
@@ -97,10 +98,57 @@ def _project_for(item: AgendaItem) -> Project | None:
     from tesseract.orchestrator.projects.store import ProjectStore
 
     try:
-        return ProjectStore().get(item.project_id)
+        # A row naming the app's own code is never run, even one written
+        # before the store refused them: it closes as a task with no project.
+        return ProjectStore().get_usable(item.project_id)
     except Exception:
         logger.exception("task_close: could not read the project registry")
         return None
+
+
+def _running_checks(item: AgendaItem, project: Project) -> set[str]:
+    """The check kinds this close will actually run.
+
+    Invariant 1: a check runs only when the criteria NAMES it and the project
+    DECLARES it; the intersection, not either side alone. A criteria naming a
+    check nobody declared cannot be closed by anything but a sentence, and a
+    project declaring a check the criteria never mentions is not what this
+    task is being judged on.
+    """
+    from tesseract.orchestrator.autonomy.morning import checks_named, declared_checks
+
+    return checks_named(item.success_criteria) & declared_checks(project)
+
+
+def _gated_project(project: Project, running: set[str]) -> Project:
+    """A copy of `project` whose verify carries only the running checks.
+
+    `run_gate` itself never changes: it always walks the full `STEP_ORDER` and
+    treats a blank field as not configured, so blanking every field the
+    criteria did not name is what keeps an unmentioned check from running,
+    with no second gate and no filtered step list.
+    """
+    fields = {name: getattr(project.verify, name) for name in running}
+    return project.model_copy(update={"verify": VerifyCommands(**fields)})
+
+
+def _drifted(snapshot: str, verify: VerifyCommands, running: set[str]) -> bool:
+    """Whether a check that will run changed since the task was promised.
+
+    Invariant 3: only the checks in `running` are compared. A running check's
+    command that differs from, or is simply absent from, the snapshot counts
+    as drift; a check the criteria does not name may change freely without
+    it. A blank snapshot (a record written before snapshots existed) can
+    never be judged and is never drift.
+    """
+    if not snapshot or not running:
+        return False
+    promised = dict(
+        line.split(": ", 1) for line in snapshot.splitlines() if ": " in line
+    )
+    return any(
+        promised.get(name) != (getattr(verify, name) or None) for name in running
+    )
 
 
 class TaskCloseInput(BaseModel):
@@ -133,8 +181,9 @@ class TaskCloseTool(Tool):
         "Use when the evidence meets what the task declared would count as "
         "done, or when it cannot be met and there is no decision left to ask "
         "the operator for. Give the evidence itself, not a summary of your "
-        "work. On a project with verify steps the steps run and decide; a "
-        "failing step closes the task as failed whatever you said."
+        "work. When the criteria names a check the project declares, that "
+        "check runs and decides; a failing one closes the task as failed "
+        "whatever you said."
     )
     not_when: ClassVar[str] = (
         "the task is waiting on the operator or blocked: leave it, the panel "
@@ -211,10 +260,28 @@ class TaskCloseTool(Tool):
             )
         where = f"in turn {context.turn_id}" if context.turn_id else "outside a recorded turn"
 
+        # Invariants held together here (a second finding on this code means
+        # design against the whole list, not the one finding in front of you):
+        #  1. What runs is `checks_named(criteria) & declared_checks(project)`,
+        #     never "every check the project declares". `run_gate` itself does
+        #     not change: it is handed a `VerifyCommands` with every other
+        #     field blanked.
+        #  2. An empty running set, whether there is no project, the project
+        #     declares nothing, or the criteria names none of what it does
+        #     declare, closes on the assistant's word, `by="model"`, in the
+        #     same shape as the no-project close, and says plainly that no
+        #     check it names is declared so nothing checked it.
+        #  3. Drift compares only the checks that run: a running check's
+        #     command that differs from, or is missing in, the promised
+        #     snapshot is drift. A blank snapshot is never drift. A check the
+        #     criteria does not name may change freely without it.
+        #  4. Every failure rule is unchanged for the checks that do run: a
+        #     failing step overrules a declared done; a declared failed is
+        #     never turned into a done; a vacuous gate leaves a declared done
+        #     open and closes a declared failed on the word.
         project = _project_for(item)
-        if project is None or project.verify.is_empty():
-            # No checks either way, so a declared failure and a declared done
-            # are both the assistant's word and both say so.
+        running = _running_checks(item, project) if project is not None else set()
+        if project is None or not running:
             if inp.outcome == "failed":
                 return self._close(
                     context,
@@ -222,15 +289,22 @@ class TaskCloseTool(Tool):
                     reason=evidence[:500],
                     said=f"{item.id} is failed. The reason is on its record.",
                 )
+            no_checks = (
+                "it has no project checks" if project is None
+                else f"no check it names is declared by {project.name}"
+            )
             return self._close(
                 context,
                 item, AgendaStatus.DONE, verification=evidence, by="model",
                 reason=f"claimed {where}: {evidence[:200]}",
-                said=f"{item.id} is done on your word: it has no project checks. The evidence is on its record.",
+                said=(
+                    f"{item.id} is done on your word: {no_checks}, so nothing "
+                    f"checked it. The evidence is on its record."
+                ),
             )
 
         try:
-            result = await self._gate(project, context)
+            result = await self._gate(_gated_project(project, running), context)
         except Exception as exc:
             logger.exception("task_close: the gate could not run for %s", item_id)
             return ToolResult(
@@ -244,7 +318,9 @@ class TaskCloseTool(Tool):
         # and its output is kept, but nobody can say the proof is the one that
         # was owed, so it is not counted as one. Empty means a record written
         # before the snapshot existed, which cannot be judged and is left alone.
-        drifted = bool(item.verify_snapshot) and item.verify_snapshot != project.verify.as_contract()
+        # Invariant 3: only the checks that ran are compared, never the whole
+        # contract, so changing a check the criteria does not name is not drift.
+        drifted = _drifted(item.verify_snapshot, project.verify, running)
         decided: Literal["gate", "model"] = "model" if drifted else "gate"
         note = (
             "\n\nThe project's checks changed after this task was accepted, so "

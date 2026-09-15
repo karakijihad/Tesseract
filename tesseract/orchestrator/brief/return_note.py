@@ -88,6 +88,61 @@ def owed(*, now: datetime | None = None) -> datetime | None:
     return mark if is_owed(mark, now=now) else None
 
 
+def build_sections(
+    *,
+    since: datetime | None,
+    now: datetime | None = None,
+    event_store: Any | None = None,
+    ledger: Any | None = None,
+) -> list[Section]:
+    """The note's sections, each carrying only the lines it has.
+
+    This is the one place the six stores are read. `render()` formats this
+    list into text and the return-note route serves it as structure, and both
+    read it from here rather than from each other, so the two cannot say
+    different things about the same absence.
+
+    `None` means this machine has no record of when the operator was last
+    here, which is an answer and not an error, and there is nothing to
+    measure since it, so the result is `[]` rather than a call to any store.
+
+    `event_store` and `ledger` are handed in the way the brief renderer is
+    handed its digester and its memory store: they are live objects the
+    backend already holds, and resolving a second one here would be a second
+    answer to where the inbox and the ledger are. Everything else resolves
+    from `TESSERACT_HOME` at call time.
+    """
+    if since is None:
+        return []
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    sections = [
+        _section("Shipped", lambda: _shipped(since)),
+        _section("Tried and could not", lambda: _failed(since)),
+        _section("Waiting on you", lambda: _waiting(event_store, now=moment)),
+        _section("Learned", lambda: _learned(since, event_store)),
+        _section("Spent", lambda: _spent(since, ledger)),
+        _section("Health", lambda: _health(now=moment)),
+    ]
+    return [s for s in sections if s.lines]
+
+
+def format_note(*, since: datetime, now: datetime, sections: list[Section]) -> str:
+    """The text `render()` shows, from a `since` and the sections already
+    built for it. Kept apart from `build_sections` so a caller that already
+    has the sections, the return-note route, need not read the stores again
+    to get the text too."""
+    head = f"You were last here on {_when(since)}, {_how_long(now - since)} ago."
+    if not sections:
+        return f"{head} Nothing to report."
+
+    out = [head, ""]
+    for section in sections:
+        out.append(f"{section.title}:")
+        out.extend(line.rendered() for line in section.lines)
+        out.append("")
+    return "\n".join(out).strip()
+
+
 def render(
     *,
     since: datetime | None,
@@ -112,27 +167,8 @@ def render(
             "This machine has no record of when you were last here, so there "
             "is nothing to measure since against."
         )
-
-    sections = [
-        _section("Shipped", lambda: _shipped(since)),
-        _section("Tried and could not", lambda: _failed(since)),
-        _section("Waiting on you", lambda: _waiting(event_store, now=moment)),
-        _section("Learned", lambda: _learned(since, event_store)),
-        _section("Spent", lambda: _spent(since, ledger)),
-        _section("Health", lambda: _health(now=moment)),
-    ]
-
-    head = f"You were last here on {_when(since)}, {_how_long(moment - since)} ago."
-    filled = [s for s in sections if s.lines]
-    if not filled:
-        return f"{head} Nothing to report."
-
-    out = [head, ""]
-    for section in filled:
-        out.append(f"{section.title}:")
-        out.extend(line.rendered() for line in section.lines)
-        out.append("")
-    return "\n".join(out).strip()
+    filled = build_sections(since=since, now=moment, event_store=event_store, ledger=ledger)
+    return format_note(since=since, now=moment, sections=filled)
 
 
 def _section(title: str, build: Callable[[], list[Line]]) -> Section:
@@ -560,4 +596,13 @@ def _how_long(span: timedelta) -> str:
     return f"{hours // 24} days"
 
 
-__all__ = ["ABSENT_AFTER", "Line", "Section", "is_owed", "owed", "render"]
+__all__ = [
+    "ABSENT_AFTER",
+    "Line",
+    "Section",
+    "build_sections",
+    "format_note",
+    "is_owed",
+    "owed",
+    "render",
+]

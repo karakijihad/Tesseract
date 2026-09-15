@@ -204,12 +204,73 @@ class WorkspaceWatcher:
                 "workspace_watch: %s could not be settled: %s",
                 event.event_id, exc.payload,
             )
+            await self._tell_them_it_was_refused(event, exc.payload)
             return None
         except Exception:
             log.exception("workspace_watch: settling %s raised", event.event_id)
             return None
         log.info("workspace_watch: %s (%s) applied without asking", event.event_id, kind)
         return updated
+
+    async def _tell_them_it_was_refused(self, event: Any, refusal: dict[str, Any]) -> None:
+        """A card the mode was meant to apply, and could not.
+
+        Without this the refusal was one log line. The card stayed pending,
+        looked like every other card waiting for an answer, and nothing on it
+        said it had been tried or why it failed. So it is said in both places
+        the operator might be: a comment on the card for the inbox, and a
+        message wherever `routing.yaml` sends this kind, which is the phone.
+
+        Nothing here retries and nothing here can loop. The comment goes to
+        `comments.jsonl`, which this watcher does not read, and the card's own
+        row is left exactly as it was, so no second sync sees it change.
+        """
+        if refusal.get("error") == "not_found":
+            # The card was deleted while this was applying it. Nothing is
+            # waiting for anyone, so there is nothing to tell them.
+            return
+        # The error code is already in the log line above; the operator gets
+        # the sentence, or plainly that there was none.
+        reason = str(refusal.get("detail") or "").strip() or "No reason was given"
+        if reason[-1] not in ".!?":
+            reason += "."
+        payload = getattr(event, "payload", None) or {}
+        document = (
+            payload.get("label")
+            or payload.get("name")
+            or payload.get("target_path")
+            or str(getattr(event, "kind", "") or "").replace("_", " ")
+            or "a change"
+        )
+        try:
+            from tesseract.workspace_events.broadcast import broadcast_comment_appended
+            from tesseract.workspace_events.events import WorkspaceComment
+
+            comment = WorkspaceComment.new(
+                event_id=event.event_id,
+                author="agent",
+                body=(
+                    f"This could not be applied on its own: {reason} It is "
+                    "waiting for you. Approve it to try again, or reject it."
+                ),
+            )
+            await asyncio.to_thread(self._store.append_comment, comment)
+            await broadcast_comment_appended(self._app, comment)
+        except Exception:
+            log.exception("workspace_watch: could not note on %s why it did not apply", event.event_id)
+        try:
+            from tesseract.mirror.server.app import _get_outbound_notifier
+
+            notifier = _get_outbound_notifier(self._app)
+            if notifier is None:
+                return
+            await notifier.notify("workspace_change_refused", {
+                "document": document,
+                "reason": reason,
+                "event_id": event.event_id,
+            })
+        except Exception:
+            log.exception("workspace_watch: could not say that %s was refused", event.event_id)
 
     async def _tell_them_it_applied(self, event: Any) -> None:
         """A document that changed itself says so, wherever the operator is.

@@ -40,6 +40,7 @@ core:
   - memory_save  # Write a new durable memory to the persistent store.
   - memory_search  # Search the persistent memory store by query, ranked by relevance.
   - memory_update  # Revise an existing memory's content, title, importance, or tags.
+  - workspace_read  # Read one of your own workspace documents, or a playbook's SKILL.md.
   # Searching the web
   - tavily_extract  # Extracts clean markdown from one or more specific URLs via Tavily.
   - tavily_search  # Web search via Tavily. Snippets shaped for a model, plus an optional answer.
@@ -94,7 +95,6 @@ core:
 #   - memory_promote  # Run an operator-approved memory lifecycle action: archive, merge, or bump.
 #   - recall_history  # Search past session transcripts and workshop artifacts by free text.
 #   - soul_growth_propose  # Queue a distilled SOUL.md Growth bullet for operator approval.
-#   - workspace_read  # Read one of your own workspace documents, or a playbook's SKILL.md.
 #   Research library
 #   - vault_ingest  # Files a local document or URL into the immutable vault and indexes it.
 #   - vault_lint  # Runs lint passes over the compiled vault wiki and flags issues found.

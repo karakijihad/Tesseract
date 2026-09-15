@@ -19,13 +19,13 @@ Calling a tool by name works whether or not the assistant was told about it at t
 
 ## The working set is the dial you turn
 
-`working_set.yaml` is where you keep the tools you want described in full on every turn, complete with their inputs. Right now it holds 35 of the 158 tools the assistant has. Anything on it is always at hand.
+`working_set.yaml` is where you keep the tools you want described in full on every turn, complete with their inputs. Right now it holds 36 of the 158 tools the assistant has. Anything on it is always at hand.
 
 Move a tool onto the list and it becomes instant to reach, at the cost of a slightly larger request on every turn from then on. Move one off and requests get a little smaller, at the cost of one extra step the first time a conversation needs it. The choice is yours to make and change, and nothing else about what the assistant may do changes with it.
 
 ## Everything else is grouped by what it is for
 
-The other 123 tools are sorted into 22 groups, each named for the kind of question it answers: remembering something, searching the web, showing you something on screen, and so on. The assistant can reach into any group and use anything inside it without asking your permission first. Being in a group only changes how it gets there, never whether it is allowed to.
+The other 122 tools are sorted into 22 groups, each named for the kind of question it answers: remembering something, searching the web, showing you something on screen, and so on. The assistant can reach into any group and use anything inside it without asking your permission first. Being in a group only changes how it gets there, never whether it is allowed to.
 
 ## It gets there differently depending on which model is answering
 

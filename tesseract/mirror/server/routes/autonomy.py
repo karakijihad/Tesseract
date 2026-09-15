@@ -331,13 +331,19 @@ async def get_operator_journal(request: web.Request) -> web.Response:
 
 async def get_return_note(request: web.Request) -> web.Response:
     """GET /api/autonomy/return-note — what changed since the operator was
-    last here, as the same text the brief and the tool carry.
+    last here, as the same text the brief and the tool carry, plus the rows
+    behind it so the panel can draw them rather than parse them back out.
 
-    The panel calls the one reader rather than assembling its own view of the
-    same records, so the cockpit and a phone cannot disagree about what
+    The panel calls the one builder rather than assembling its own view of
+    the same records, so the cockpit and a phone cannot disagree about what
     happened. `owed` says whether the absence was long enough for the brief to
     have carried it; the panel shows the note either way, because a room the
     operator opened is a question they asked.
+
+    `sections` is built once and `text` is formatted from that same result,
+    never a second call that would open the six stores again. When `since` is
+    `None` there is nothing to measure since, so `sections` is `[]` and `text`
+    is the one line `render()` has always returned for that case.
 
     On a thread: the note opens the agenda history, the archive, the ledger
     and the inbox, and nothing on this panel may keep a browser waiting on
@@ -351,19 +357,37 @@ async def get_return_note(request: web.Request) -> web.Response:
     ledger = request.app.get("cost_ledger")
 
     def _read() -> dict[str, Any]:
-        # One read, answering both halves. Reading the marker again for `owed`
-        # let a message arriving between the two produce a response whose
-        # `since` described the old absence and whose `owed` described a new
-        # one.
+        # One read, answering every field below. Reading the marker again for
+        # `owed` let a message arriving between two reads produce a response
+        # whose `since` described the old absence and whose `owed` described
+        # a new one.
         since = last_seen.read()
-        return {
-            "since": since.isoformat() if since is not None else None,
-            "owed": return_note.is_owed(since),
-            "text": return_note.render(
+        now = datetime.now(timezone.utc)
+        if since is None:
+            filled: list[Any] = []
+            text = return_note.render(since=None, now=now, ledger=ledger)
+        else:
+            filled = return_note.build_sections(
                 since=since,
+                now=now,
                 event_store=EventStore(workspace_events_dir()),
                 ledger=ledger,
-            ),
+            )
+            text = return_note.format_note(since=since, now=now, sections=filled)
+        return {
+            "since": since.isoformat() if since is not None else None,
+            "owed": return_note.is_owed(since, now=now),
+            "text": text,
+            "sections": [
+                {
+                    "title": section.title,
+                    "lines": [
+                        {"text": line.text, "record": line.record}
+                        for line in section.lines
+                    ],
+                }
+                for section in filled
+            ],
         }
 
     return web.json_response(await asyncio.to_thread(_read))

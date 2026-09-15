@@ -115,6 +115,22 @@ def gather(cs: Any) -> dict[str, Any]:
         report.update(_last_turn_cache(getattr(cs, "history", [])))
     except Exception:
         logger.exception("context report: the last turn's cache split failed")
+    # The measured size of two actual requests, not the structural estimate
+    # above. `history` is cleared start to finish by `ChatSession.reset()`,
+    # which both `/reset` and the agent's own consolidation boundary call, so
+    # scanning it fresh on every report is the reset for free: a cleared
+    # conversation has no assistant message yet and both come back `None`
+    # until its own first call lands.
+    try:
+        history = getattr(cs, "history", [])
+        first = _first_request_tokens(history)
+        if first is not None:
+            report["first_request_tokens"] = first
+        last = _last_request_tokens(history)
+        if last is not None:
+            report["last_request_tokens"] = last
+    except Exception:
+        logger.exception("context report: the measured request figures failed")
     return report
 
 
@@ -158,6 +174,50 @@ def _last_turn_cache(history: list[dict[str, Any]]) -> dict[str, int]:
         "last_turn_cached_tokens": cached,
         "last_turn_calls": calls,
     }
+
+
+def _first_request_tokens(history: list[dict[str, Any]]) -> int | None:
+    """The provider's own `input_tokens` for this conversation's COLD START:
+    the first model call since the conversation began, or since it was last
+    cleared.
+
+    `ChatSession.reset()` clears `history` down to nothing, and both `/reset`
+    and the agent's own consolidation boundary call it, so the earliest
+    assistant message left in `history` at any moment IS the first call of
+    whatever conversation is standing now. Nothing here needs to know a
+    boundary happened; the history it reads already forgot the old one.
+
+    `None` until that first call has landed, which a renderer reads as "no
+    measurement yet" rather than a real zero.
+    """
+    for message in history:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        usage = (message.get("_meta") or {}).get("usage")
+        if isinstance(usage, dict) and usage.get("input_tokens") is not None:
+            return int(usage.get("input_tokens") or 0)
+    return None
+
+
+def _last_request_tokens(history: list[dict[str, Any]]) -> int | None:
+    """The provider's own `input_tokens` for the single most recent model
+    call, not the whole turn's total `_last_turn_cache` sums.
+
+    A turn can be several calls deep (a tool loop), and `last_turn_input_tokens`
+    is right to sum all of them for the cache question it answers. This is a
+    different question: what did the request the provider most recently
+    priced actually weigh, on its own. `None` when the newest assistant
+    message has not had usage stamped on it, same reasoning as
+    `_first_request_tokens`.
+    """
+    for message in reversed(history):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        usage = (message.get("_meta") or {}).get("usage")
+        if isinstance(usage, dict) and usage.get("input_tokens") is not None:
+            return int(usage.get("input_tokens") or 0)
+        return None
+    return None
 
 
 def boundary_ceiling(report: dict[str, Any]) -> int:
@@ -223,6 +283,32 @@ def render(report: dict[str, Any]) -> str:
         f"payload {_short(payload_tokens)} (head {_short(system_tokens)}"
         f" + tools {_short(tools_tokens)})"
         f" · everything else {_short(int(report.get('rest_tokens') or 0))}"
+    )
+
+    # The same two figures the HUD's chip shows, in the same words, so a
+    # channel and the cockpit answer "what did the first request actually
+    # weigh" with one answer rather than two. Both fall back to the
+    # structural estimate above until their own call has happened, which is
+    # why this line never has nothing to say: `payload_tokens` and
+    # `rest_tokens` already default to zero everywhere else in this
+    # function, and the fallback here is the same total that line already
+    # computes.
+    total_estimate = payload_tokens + int(report.get("rest_tokens") or 0)
+    cold_start = report.get("first_request_tokens")
+    latest_request = report.get("last_request_tokens")
+    cold_start_label = (
+        "payload at the start of this conversation, measured"
+        if cold_start is not None
+        else "payload at the start of this conversation, estimate"
+    )
+    latest_label = (
+        "the last request, measured"
+        if latest_request is not None
+        else "the next request, estimate"
+    )
+    lines.append(
+        f"{cold_start_label} {_short(int(cold_start if cold_start is not None else total_estimate))}"
+        f" · {latest_label} {_short(int(latest_request if latest_request is not None else total_estimate))}"
     )
 
     sent = int(report.get("last_turn_input_tokens") or 0)

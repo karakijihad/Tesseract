@@ -137,6 +137,16 @@ def _resolve_working_dir(
             "project is active. Open one with project_open, or pass "
             "working_dir explicitly."
         )
+    # An old registration can still name the app's own code as the open
+    # project. A lane never starts there because of it, and says why.
+    from tesseract.orchestrator.projects.own_tree import why_root_is_refused
+
+    refused = why_root_is_refused(project.root)
+    if refused:
+        raise NamedLaneError(
+            f"named lane {name!r} was opened with no working_dir. {refused} "
+            "Open another project with project_open, or pass working_dir explicitly."
+        )
     return project.root
 
 
